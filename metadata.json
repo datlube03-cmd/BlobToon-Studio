@@ -1,0 +1,6 @@
+{
+  "name": "BlobToon Studio",
+  "description": "Topic-to-video generator and Remotion studio for faceless 2D 'What If' cartoon Shorts with procedural SVG blob characters, VoiceStudio TTS, word-highlighted captions, and MP4 rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

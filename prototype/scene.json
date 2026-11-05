@@ -1,0 +1,19 @@
+{
+  "title": "What if Mom played on your account?",
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "scenes": [
+    {
+      "id": "hook",
+      "label": "THE RULE",
+      "durationSec": 4,
+      "background": "room",
+      "caption": "Every hour you skip chores, your Mom plays on your main account.",
+      "characters": [
+        { "id": "you", "name": "You", "color": "#38bdf8", "x": 340, "y": 1150, "emotion": "shock", "accessory": "headphones" },
+        { "id": "mom", "name": "Mom", "color": "#f472b6", "x": 740, "y": 1150, "emotion": "smug", "accessory": "glasses" }
+      ]
+    }
+  ]
+}
