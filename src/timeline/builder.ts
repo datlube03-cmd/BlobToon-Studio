@@ -2,10 +2,12 @@ import { AspectRatio, getAspectPreset } from '../aspect';
 import { Script, PaletteVariation } from '../script/schema';
 import { PALETTE_VARIATIONS, computeTopicSeed } from '../script/variations';
 import { buildDeterministicScript } from '../script/generator';
+import { collectSfxEvents } from '../sfx/events';
 import { SkillRenderParams } from '../skills/schema';
 import { TtsProvider } from '../voice/provider';
 import {
   Timeline,
+  TimelineAudioConfig,
   TimelineSchema,
   TimelineScene,
   WordTiming,
@@ -18,6 +20,7 @@ export interface BuildTimelineOptions {
   seed?: number;
   skill?: string;
   renderParams?: SkillRenderParams;
+  audio?: Partial<TimelineAudioConfig>;
   fps?: number;
   width?: number;
   height?: number;
@@ -93,13 +96,46 @@ export function applyAspectToTimeline(timeline: Timeline, aspect: AspectRatio): 
 }
 
 /**
+ * Resolves a PaletteVariation by overriding background and accent colors when
+ * `colorPalette` (an array of hex color strings) is provided via Skill Render Params.
+ */
+export function resolveVariationWithColorPalette(
+  baseVariation: PaletteVariation,
+  colorPalette?: string[]
+): PaletteVariation {
+  if (!colorPalette || colorPalette.length < 2) {
+    return baseVariation;
+  }
+  const skyTop = colorPalette[0];
+  const skyBottom = colorPalette[1] ?? colorPalette[0];
+  const floorColor = colorPalette[2] ?? colorPalette[0];
+  const wallAccent = colorPalette[3] ?? colorPalette[1];
+  const captionHighlight = colorPalette[4] ?? colorPalette[3] ?? colorPalette[1];
+  const extraPalette =
+    colorPalette.length >= 4
+      ? colorPalette.slice(3).concat(baseVariation.characterPalette)
+      : [colorPalette[1], ...baseVariation.characterPalette];
+
+  return {
+    ...baseVariation,
+    skyTop,
+    skyBottom,
+    floorColor,
+    wallAccent,
+    captionHighlight,
+    characterPalette: extraPalette.slice(0, 6),
+  };
+}
+
+/**
  * Pure synchronous timeline builder given pre-synthesized voice durations per scene.
  * When `options.renderParams` is provided from a Skill file, merges `renderParams` into
- * the Timeline and applies `sceneDurationRange` and `transitionType` overrides.
+ * the Timeline and applies `ttsSpeedMultiplier`, `sceneDurationRange`, `transitionType`,
+ * and `colorPalette` overrides.
  */
 export function assembleTimelineFromDurations(
   script: Script,
-  sceneVoiceResults: Array<{ file?: string; durationSec: number }>,
+  sceneVoiceResults: Array<{ file?: string; durationSec: number; speedAdjusted?: boolean }>,
   options: BuildTimelineOptions = {}
 ): Timeline {
   const aspect: AspectRatio = options.aspect ?? script.aspect ?? '9:16';
@@ -108,35 +144,44 @@ export function assembleTimelineFromDurations(
   const width = options.width ?? preset.width;
   const height = options.height ?? preset.height;
   const defaultPaddingSec = options.scenePaddingSec ?? 0.45;
-  const variation = options.variation ?? PALETTE_VARIATIONS[0];
   const seed = options.seed ?? computeTopicSeed(script.topic);
   const skillName = options.skill ?? script.skill;
-  const renderParams = options.renderParams;
+  const renderParams = options.renderParams ?? script.renderParams;
+  const baseVariation = options.variation ?? PALETTE_VARIATIONS[0];
+  const variation = resolveVariationWithColorPalette(baseVariation, renderParams?.colorPalette);
+  const ttsSpeedMultiplier =
+    renderParams?.ttsSpeedMultiplier && renderParams.ttsSpeedMultiplier > 0
+      ? renderParams.ttsSpeedMultiplier
+      : 1.0;
 
   let currentFrame = 0;
   const timelineScenes: TimelineScene[] = script.scenes.map((scene, idx) => {
     const voiceRes = sceneVoiceResults[idx] ?? { durationSec: 6.0 };
-    const measuredVoiceSec = Number(Math.max(0.8, voiceRes.durationSec).toFixed(3));
+    const rawVoiceSec = voiceRes.speedAdjusted
+      ? voiceRes.durationSec
+      : voiceRes.durationSec / ttsSpeedMultiplier;
+    const measuredVoiceSec = Number(Math.max(0.5, rawVoiceSec).toFixed(3));
 
-    let paddingSec = defaultPaddingSec;
+    let paddingSec = Number((defaultPaddingSec / Math.sqrt(ttsSpeedMultiplier)).toFixed(3));
     let rawDurationSec = measuredVoiceSec + paddingSec;
 
     if (renderParams?.sceneDurationRange) {
       const [minSec, maxSec] = renderParams.sceneDurationRange;
       rawDurationSec = Math.max(minSec, Math.min(maxSec, rawDurationSec));
-      paddingSec = Number(Math.min(defaultPaddingSec, rawDurationSec * 0.12).toFixed(3));
+      paddingSec = Number(Math.min(paddingSec, rawDurationSec * 0.12).toFixed(3));
     }
 
     const durationInFrames = Math.max(Math.round(fps * 0.5), Math.round(rawDurationSec * fps));
     const durationSec = Number((durationInFrames / fps).toFixed(3));
     const voiceDurationSec = renderParams?.sceneDurationRange
-      ? Number(Math.max(0.4, durationSec - paddingSec).toFixed(3))
+      ? Number(Math.max(0.4, Math.min(measuredVoiceSec, durationSec - paddingSec)).toFixed(3))
       : measuredVoiceSec;
 
     const startFrame = currentFrame;
     const endFrame = startFrame + durationInFrames;
     currentFrame = endFrame;
 
+    // Recompute word timings against the speed-adjusted voiceDurationSec
     const words = computeWordTimings(scene.caption || scene.narration, voiceDurationSec, fps);
     const effectiveTransition = renderParams?.transitionType ?? scene.transition;
 
@@ -158,6 +203,7 @@ export function assembleTimelineFromDurations(
       characters: scene.characters,
       props: scene.props,
       beats: scene.beats,
+      ...(scene.sfx !== undefined ? { sfx: scene.sfx } : {}),
       layoutOverrides: scene.layoutOverrides,
     };
   });
@@ -165,12 +211,19 @@ export function assembleTimelineFromDurations(
   const totalFrames = Math.max(1, currentFrame);
   const totalDurationSec = Number((totalFrames / fps).toFixed(3));
 
+  const audioConfig: TimelineAudioConfig = {
+    sfx: options.audio?.sfx ?? true,
+    sfxVolume: options.audio?.sfxVolume ?? 0.35,
+    ...(options.audio?.music ? { music: options.audio.music } : {}),
+  };
+
   const timeline: Timeline = {
     version: '1.0',
     aspect,
     seed,
     ...(skillName ? { skill: skillName } : {}),
     ...(renderParams ? { renderParams } : {}),
+    audio: audioConfig,
     topic: script.topic,
     title: script.title,
     hook: script.hook,
@@ -190,32 +243,45 @@ export function assembleTimelineFromDurations(
 
 /**
  * Full async timeline builder: synthesizes narration per scene via TtsProvider,
- * measures real audio durations, and produces a validated Timeline JSON object.
+ * applies `renderParams.ttsSpeedMultiplier` when present, measures real audio durations,
+ * and produces a validated Timeline JSON object.
  */
 export async function buildTimeline(
   script: Script,
   ttsProvider: TtsProvider,
   options: BuildTimelineOptions = {}
 ): Promise<{ timeline: Timeline; providerUsed: string }> {
-  const voiceResults: Array<{ file?: string; durationSec: number }> = [];
+  const voiceResults: Array<{ file?: string; durationSec: number; speedAdjusted?: boolean }> = [];
   let providerUsed = 'mock';
+  const effectiveRenderParams = options.renderParams ?? script.renderParams;
+  const ttsSpeedMultiplier = effectiveRenderParams?.ttsSpeedMultiplier ?? 1.0;
 
   for (const scene of script.scenes) {
-    const res = await ttsProvider.synthesize(scene.narration, options.voice);
+    const res = await ttsProvider.synthesize(
+      scene.narration,
+      options.voice,
+      ttsSpeedMultiplier
+    );
     if (res.provider) {
       providerUsed = res.provider;
     }
     voiceResults.push({
       file: res.file,
       durationSec: res.durationSec,
+      speedAdjusted: res.speedAdjusted ?? true,
     });
   }
 
-  const timeline = assembleTimelineFromDurations(script, voiceResults, options);
+  const timeline = assembleTimelineFromDurations(script, voiceResults, {
+    ...options,
+    renderParams: effectiveRenderParams,
+  });
   return { timeline, providerUsed };
 }
 
 export function buildVideoMeta(timeline: Timeline, voiceProvider = 'mock'): VideoMeta {
+  const audioCfg = timeline.audio ?? { sfx: true, sfxVolume: 0.35 };
+  const sfxEvents = collectSfxEvents(timeline, timeline.fps);
   return VideoMetaSchema.parse({
     title: timeline.title,
     description: timeline.description,
@@ -225,6 +291,12 @@ export function buildVideoMeta(timeline: Timeline, voiceProvider = 'mock'): Vide
     seed: timeline.seed,
     ...(timeline.skill ? { skill: timeline.skill } : {}),
     ...(timeline.renderParams ? { renderParams: timeline.renderParams } : {}),
+    audio: {
+      sfx: audioCfg.sfx,
+      sfxVolume: audioCfg.sfxVolume,
+      sfxEventCount: sfxEvents.length,
+      ...(audioCfg.music ? { music: audioCfg.music } : {}),
+    },
     durationSec: timeline.totalDurationSec,
     totalFrames: timeline.totalFrames,
     fps: timeline.fps,
@@ -241,21 +313,30 @@ export function buildVideoMeta(timeline: Timeline, voiceProvider = 'mock'): Vide
 export function buildBrowserPreviewTimeline(
   script: Script,
   variation: PaletteVariation = PALETTE_VARIATIONS[0],
-  aspect: AspectRatio = '9:16'
+  aspect: AspectRatio = '9:16',
+  renderParams?: SkillRenderParams,
+  skill?: string
 ): Timeline {
   const durations = script.scenes.map((scene) => {
     const words = scene.narration.trim().split(/\s+/).filter(Boolean).length;
     const dur = Math.max(2.5, Number((words / 2.55 + 0.3).toFixed(2)));
-    return { durationSec: dur };
+    return { durationSec: dur, speedAdjusted: false };
   });
-  return assembleTimelineFromDurations(script, durations, { variation, aspect });
+  return assembleTimelineFromDurations(script, durations, {
+    variation,
+    aspect,
+    renderParams: renderParams ?? script.renderParams,
+    skill: skill ?? script.skill,
+  });
 }
 
 export function createDefaultTimeline(
   topic = 'What if Mom started playing on your Roblox account',
   variation: PaletteVariation = PALETTE_VARIATIONS[0],
-  aspect: AspectRatio = '9:16'
+  aspect: AspectRatio = '9:16',
+  renderParams?: SkillRenderParams,
+  skill?: string
 ): Timeline {
   const script = buildDeterministicScript(topic, variation, aspect);
-  return buildBrowserPreviewTimeline(script, variation, aspect);
+  return buildBrowserPreviewTimeline(script, variation, aspect, renderParams, skill);
 }

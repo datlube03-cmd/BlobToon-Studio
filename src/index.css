@@ -6,12 +6,17 @@
     --font-display: 'Bricolage Grotesque', system-ui, sans-serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --vn-lacquer-bg: #120907;
+    --vn-lacquer-surface: #1d100c;
+    --vn-lacquer-border: #3d2119;
+    --vn-gold: #f59e0b;
+    --vn-crimson: #e11d48;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #090d16;
-    color: #f1f5f9;
+    background-color: #120907;
+    color: #fef3c7;
   }
 
   h1, h2, h3, h4, .font-display {

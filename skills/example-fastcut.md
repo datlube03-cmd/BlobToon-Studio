@@ -1,5 +1,5 @@
 ## name: example-fastcut
-description: High-retention fast-cut editing style with rapid 1.5s-2.5s scenes, punchy under-10-word sentences, medium camera shake, zoom punches, bold-pop captions, and hard-cut transitions.
+description: High-retention fast-cut editing style with rapid 1.5s-2.5s scenes, punchy under-10-word sentences, 1.25x TTS speed, high SFX intensity, medium camera shake, zoom punches, bold-pop captions, and hard-cut transitions.
 
 ## Style Rules (writing style, pacing, tone)
 
@@ -13,6 +13,9 @@ Fast cuts, short dialogues and sentences under 10 words each, each scene max 2 t
   "cameraShake": "medium",
   "zoomPunchOnPunchline": true,
   "captionStyle": "bold-pop",
-  "transitionType": "hard-cut"
+  "transitionType": "hard-cut",
+  "bgmGenre": "arcade-rush",
+  "sfxIntensity": "high",
+  "ttsSpeedMultiplier": 1.25
 }
 ```

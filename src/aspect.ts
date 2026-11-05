@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import {
+  BUNDLED_FONT_FAMILY,
+  measureTextWithBundledFont,
+  resolveBundledFontFamily,
+} from './fonts/bundledFont';
+
+export { BUNDLED_FONT_FAMILY, resolveBundledFontFamily };
 
 export const AspectRatioSchema = z.enum(['9:16', '16:9', '4:3', '3:4']);
 export type AspectRatio = z.infer<typeof AspectRatioSchema>;
@@ -21,6 +28,8 @@ export interface AspectPreset {
   charScaleFactor: number;
   groundYRatio: number;
   captionTopRatio: number;
+  captionFontScale: number;
+  captionMaxWidthRatio: number;
   extraThumbnailSize?: { width: number; height: number };
 }
 
@@ -36,6 +45,8 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     charScaleFactor: 0.92,
     groundYRatio: 0.58,
     captionTopRatio: 0.135,
+    captionFontScale: 0.042,
+    captionMaxWidthRatio: 0.86,
   },
   '16:9': {
     ratio: '16:9',
@@ -48,6 +59,8 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     charScaleFactor: 0.76,
     groundYRatio: 0.64,
     captionTopRatio: 0.165,
+    captionFontScale: 0.039,
+    captionMaxWidthRatio: 0.58,
     extraThumbnailSize: { width: 1280, height: 720 },
   },
   '4:3': {
@@ -61,6 +74,8 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     charScaleFactor: 0.78,
     groundYRatio: 0.64,
     captionTopRatio: 0.165,
+    captionFontScale: 0.039,
+    captionMaxWidthRatio: 0.7,
   },
   '3:4': {
     ratio: '3:4',
@@ -71,8 +86,10 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     orientation: 'portrait',
     safeMargin: { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 },
     charScaleFactor: 0.86,
-    groundYRatio: 0.60,
+    groundYRatio: 0.6,
     captionTopRatio: 0.145,
+    captionFontScale: 0.04,
+    captionMaxWidthRatio: 0.86,
   },
 };
 
@@ -165,41 +182,26 @@ export interface StageLayoutMetrics {
     topY: number;
     maxWidth: number;
     fontSize: number;
+    wordGap: number;
     lineHeight: number;
+    letterSpacing: number;
+    outlineStroke: number;
   };
   characters: Map<string, ComputedCharacterPlacement>;
   props: Map<string, ComputedPropPlacement>;
 }
 
-const CHAR_WIDTH_FACTORS: Record<string, number> = {
-  W: 0.78,
-  M: 0.76,
-  '@': 0.82,
-  I: 0.36,
-  i: 0.32,
-  l: 0.32,
-  '1': 0.48,
-  '!': 0.35,
-  '.': 0.32,
-  ',': 0.32,
-  ':': 0.34,
-  ';': 0.34,
-  '-': 0.42,
-  ' ': 0.34,
-};
-
 /**
- * Deterministic proportional glyph-width estimator (in pixels) for Bricolage Grotesque / Plus Jakarta Sans.
+ * Exact glyph advance-width measurement (in pixels) using `opentype.js` against the
+ * bundled OFL font (`assets/fonts/Fredoka-Bold.ttf`). Never uses a system font or hardcoded lookup table.
  */
-export function measureTextWidth(text: string, fontSize: number, letterSpacing = 0): number {
-  if (!text) return 0;
-  let total = 0;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const factor = CHAR_WIDTH_FACTORS[ch] ?? (ch === ch.toUpperCase() ? 0.64 : 0.56);
-    total += factor * fontSize + letterSpacing;
-  }
-  return Math.ceil(total);
+export function measureTextWidth(
+  text: string,
+  fontSize: number,
+  letterSpacing = 0,
+  fontFamily?: string
+): number {
+  return measureTextWithBundledFont(text, fontSize, letterSpacing, fontFamily);
 }
 
 /**
@@ -210,7 +212,8 @@ export function wrapWordsByMeasuredWidth<T extends { word: string }>(
   maxWidthPx: number,
   fontSize: number,
   wordPaddingPx: number,
-  gapPx: number
+  gapPx: number,
+  fontFamily?: string
 ): T[][] {
   if (words.length === 0) return [];
   const lines: T[][] = [];
@@ -218,7 +221,7 @@ export function wrapWordsByMeasuredWidth<T extends { word: string }>(
   let currentWidth = 0;
 
   for (const item of words) {
-    const wPx = Math.max(fontSize * 1.4, measureTextWidth(item.word.toUpperCase(), fontSize) + wordPaddingPx);
+    const wPx = measureTextWidth(item.word.toUpperCase(), fontSize, 0, fontFamily) + wordPaddingPx;
     const addedWidth = currentLine.length === 0 ? wPx : currentWidth + gapPx + wPx;
     if (currentLine.length > 0 && addedWidth > maxWidthPx) {
       lines.push(currentLine);
@@ -298,12 +301,21 @@ export function computeStageLayout(
   };
 
   // 2. Top Caption Band (below chapter badge, inside safe area)
+  // Single source of truth for caption typography & spacing (Change G):
+  // fontSize = unit * k per aspect; wordGap = fontSize * 0.28; lineHeight = fontSize * 1.18;
+  // letterSpacing = 0; outlineStroke = fontSize * 0.12; maxWidth = width * captionMaxWidthRatio
   const captionTopY = override?.captionY
     ? Math.round(override.captionY <= 1 ? override.captionY * height : override.captionY)
     : Math.round(Math.max(chapterBadge.box.bottom + unit * 0.018, height * preset.captionTopRatio));
-  const captionFontSize = Math.round(unit * (preset.orientation === 'landscape' ? 0.038 : 0.042));
-  const captionLineHeight = Math.round(captionFontSize * 1.48);
-  const captionMaxWidth = Math.round(safeArea.width * 0.92);
+  const captionFontSize = Math.round(unit * preset.captionFontScale);
+  const captionWordGap = Number((captionFontSize * 0.28).toFixed(2));
+  const captionLineHeight = Number((captionFontSize * 1.18).toFixed(2));
+  const captionLetterSpacing = 0;
+  const captionOutlineStroke = Number((captionFontSize * 0.12).toFixed(2));
+  const captionMaxWidth = Math.min(
+    safeArea.width,
+    Math.round(width * preset.captionMaxWidthRatio)
+  );
 
   // 3. Adaptive Character Placements in lower half
   const sortedChars = [...characters].sort((a, b) => a.x - b.x);
@@ -436,7 +448,10 @@ export function computeStageLayout(
       topY: captionTopY,
       maxWidth: captionMaxWidth,
       fontSize: captionFontSize,
+      wordGap: captionWordGap,
       lineHeight: captionLineHeight,
+      letterSpacing: captionLetterSpacing,
+      outlineStroke: captionOutlineStroke,
     },
     characters: charMap,
     props: propMap,

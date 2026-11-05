@@ -16,6 +16,9 @@ export const SkillTransitionTypeSchema = z.enum([
 ]);
 export type SkillTransitionType = z.infer<typeof SkillTransitionTypeSchema>;
 
+export const SfxIntensitySchema = z.enum(['low', 'medium', 'high']);
+export type SfxIntensity = z.infer<typeof SfxIntensitySchema>;
+
 export const SkillRenderParamsSchema = z
   .object({
     sceneDurationRange: z
@@ -29,6 +32,18 @@ export const SkillRenderParamsSchema = z
     zoomPunchOnPunchline: z.boolean().optional(),
     captionStyle: CaptionStyleSchema.optional(),
     transitionType: SkillTransitionTypeSchema.optional(),
+    bgmGenre: z.string().min(1).optional(),
+    sfxIntensity: SfxIntensitySchema.optional(),
+    ttsSpeedMultiplier: z.number().min(0.4).max(3.0).optional(),
+    colorPalette: z
+      .array(
+        z
+          .string()
+          .regex(/^#[0-9a-fA-F]{3,8}$/, 'colorPalette entries must be valid hex color codes')
+      )
+      .min(2)
+      .optional(),
+    fontFamily: z.string().min(1).optional(),
   })
   .strict();
 

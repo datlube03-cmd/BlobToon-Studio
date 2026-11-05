@@ -11,16 +11,24 @@ export interface TtsSynthesisResult {
   durationSec: number;
   cached?: boolean;
   provider?: 'voicestudio' | 'mock';
+  speedAdjusted?: boolean;
 }
 
 export interface TtsProvider {
-  synthesize(text: string, voice?: string): Promise<TtsSynthesisResult>;
+  synthesize(text: string, voice?: string, speedMultiplier?: number): Promise<TtsSynthesisResult>;
 }
 
-export function computeTtsCacheKey(text: string, voice: string, namespace = 'vs'): string {
+export function computeTtsCacheKey(
+  text: string,
+  voice: string,
+  namespace = 'vs',
+  speedMultiplier = 1.0
+): string {
+  const normSpeed = Number(Math.max(0.4, Math.min(3.0, speedMultiplier || 1.0)).toFixed(2));
+  const speedSuffix = normSpeed !== 1 ? `::spd=${normSpeed}` : '';
   return crypto
     .createHash('sha256')
-    .update(`${namespace}::${voice.trim().toLowerCase()}::${text.trim()}`)
+    .update(`${namespace}::${voice.trim().toLowerCase()}${speedSuffix}::${text.trim()}`)
     .digest('hex')
     .slice(0, 24);
 }
@@ -67,7 +75,12 @@ export async function probeAudioDurationSec(filePath: string): Promise<number> {
  * Writes a valid 16-bit mono 24kHz PCM WAV file (matches VoiceStudio's 24kHz default).
  * Uses near-silent subtle speech envelope (or pure silence) sized to durationSec.
  */
-export function writeWavFile(filePath: string, durationSec: number, silent = true): void {
+export function writeWavFile(
+  filePath: string,
+  durationSec: number,
+  silent = true,
+  speedMultiplier = 1.0
+): void {
   const sampleRate = 24000;
   const numChannels = 1;
   const bitsPerSample = 16;
@@ -96,10 +109,12 @@ export function writeWavFile(filePath: string, durationSec: number, silent = tru
   buffer.writeUInt32LE(dataSize, 40);
 
   if (!silent) {
+    const speed = Math.max(0.4, Math.min(3.0, speedMultiplier || 1.0));
     for (let i = 0; i < totalSamples; i++) {
       const t = i / sampleRate;
-      const syllableEnvelope = Math.max(0, Math.sin(t * Math.PI * 6.5));
-      const carrier = Math.sin(2 * Math.PI * 190 * t) * 0.6 + Math.sin(2 * Math.PI * 380 * t) * 0.4;
+      const syllableEnvelope = Math.max(0, Math.sin(t * Math.PI * 6.5 * speed));
+      const carrier =
+        Math.sin(2 * Math.PI * 190 * t) * 0.6 + Math.sin(2 * Math.PI * 380 * t) * 0.4;
       const sample = Math.round(carrier * syllableEnvelope * 1800);
       buffer.writeInt16LE(sample, 44 + i * 2);
     }
@@ -109,17 +124,19 @@ export function writeWavFile(filePath: string, durationSec: number, silent = tru
   fs.writeFileSync(filePath, buffer);
 }
 
-export function estimateTextSpeechDurationSec(text: string): number {
+export function estimateTextSpeechDurationSec(text: string, speedMultiplier = 1.0): number {
+  const speed = Math.max(0.4, Math.min(3.0, speedMultiplier || 1.0));
   const words = text
     .trim()
     .split(/\s+/)
     .filter(Boolean);
   const wordCount = words.length;
-  if (wordCount === 0) return 1.5;
-  // ~2.55 spoken words per second + punctuation pauses
+  if (wordCount === 0) return Number((1.5 / speed).toFixed(2));
+  // ~2.55 spoken words per second + punctuation pauses, scaled by speedMultiplier
   const punctuationCount = (text.match(/[,.!?;:—-]/g) || []).length;
-  const rawSec = wordCount / 2.55 + punctuationCount * 0.14;
-  return Number(Math.max(1.8, rawSec).toFixed(2));
+  const rawSec = (wordCount / 2.55 + punctuationCount * 0.14) / speed;
+  const minSec = 1.8 / speed;
+  return Number(Math.max(minSec, rawSec).toFixed(2));
 }
 
 export interface MockProviderOptions {
@@ -136,24 +153,36 @@ export class MockProvider implements TtsProvider {
     this.silent = options.silent ?? true;
   }
 
-  async synthesize(text: string, voice = 'mock-alloy'): Promise<TtsSynthesisResult> {
+  async synthesize(
+    text: string,
+    voice = 'mock-alloy',
+    speedMultiplier = 1.0
+  ): Promise<TtsSynthesisResult> {
+    const speed = Math.max(0.4, Math.min(3.0, speedMultiplier || 1.0));
     fs.mkdirSync(this.cacheDir, { recursive: true });
-    const hash = computeTtsCacheKey(text, voice, 'mock');
+    const hash = computeTtsCacheKey(text, voice, 'mock', speed);
     const filePath = path.join(this.cacheDir, `tts_mock_${hash}.wav`);
 
     if (fs.existsSync(filePath)) {
       const durationSec = await probeAudioDurationSec(filePath);
-      return { file: filePath, durationSec, cached: true, provider: 'mock' };
+      return {
+        file: filePath,
+        durationSec,
+        cached: true,
+        provider: 'mock',
+        speedAdjusted: true,
+      };
     }
 
-    const targetDuration = estimateTextSpeechDurationSec(text);
-    writeWavFile(filePath, targetDuration, this.silent);
+    const targetDuration = estimateTextSpeechDurationSec(text, speed);
+    writeWavFile(filePath, targetDuration, this.silent, speed);
     const measuredDuration = await probeAudioDurationSec(filePath);
     return {
       file: filePath,
       durationSec: measuredDuration,
       cached: false,
       provider: 'mock',
+      speedAdjusted: true,
     };
   }
 }
@@ -221,11 +250,18 @@ export class VoiceStudioProvider implements TtsProvider {
     return this.initialBackoffMs * Math.pow(2, attempt);
   }
 
-  async synthesize(text: string, voice?: string): Promise<TtsSynthesisResult> {
+  async synthesize(
+    text: string,
+    voice?: string,
+    speedMultiplier = 1.0
+  ): Promise<TtsSynthesisResult> {
     const selectedVoice = (voice || this.defaultVoice || 'alloy').trim();
+    const effectiveSpeed = Number(
+      Math.max(0.4, Math.min(3.0, speedMultiplier || 1.0)).toFixed(2)
+    );
     fs.mkdirSync(this.cacheDir, { recursive: true });
 
-    const hash = computeTtsCacheKey(text, selectedVoice, 'voicestudio');
+    const hash = computeTtsCacheKey(text, selectedVoice, 'voicestudio', effectiveSpeed);
     const cacheFile = path.join(this.cacheDir, `tts_vs_${hash}.wav`);
 
     if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 44) {
@@ -235,6 +271,7 @@ export class VoiceStudioProvider implements TtsProvider {
         durationSec,
         cached: true,
         provider: 'voicestudio',
+        speedAdjusted: true,
       };
     }
 
@@ -255,7 +292,7 @@ export class VoiceStudioProvider implements TtsProvider {
       input: text,
       voice: selectedVoice,
       response_format: 'wav',
-      speed: 1.0,
+      speed: effectiveSpeed,
     });
 
     let lastError: Error | null = null;
@@ -286,6 +323,7 @@ export class VoiceStudioProvider implements TtsProvider {
             durationSec,
             cached: false,
             provider: 'voicestudio',
+            speedAdjusted: true,
           };
         }
 
@@ -345,7 +383,7 @@ export class VoiceStudioProvider implements TtsProvider {
         this.onFallback?.(this.lastFallbackNotice);
         this.warnedOffline = true;
       }
-      return this.mockFallback.synthesize(text, selectedVoice);
+      return this.mockFallback.synthesize(text, selectedVoice, effectiveSpeed);
     }
 
     throw new Error(

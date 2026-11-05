@@ -1,6 +1,7 @@
 import React from 'react';
 import { BackgroundType, PaletteVariation } from '../script/schema';
 import { CameraShakeLevel } from '../skills/schema';
+import { resolveVariationWithColorPalette } from '../timeline/builder';
 
 export interface BackgroundProps {
   type: BackgroundType;
@@ -12,11 +13,12 @@ export interface BackgroundProps {
   groundY?: number;
   cameraShake?: CameraShakeLevel;
   zoomPunchActive?: boolean;
+  colorPalette?: string[];
 }
 
 export const Background: React.FC<BackgroundProps> = ({
   type,
-  variation,
+  variation: rawVariation,
   frame,
   width = 1080,
   height = 1920,
@@ -24,7 +26,9 @@ export const Background: React.FC<BackgroundProps> = ({
   groundY = 1080,
   cameraShake = 'none',
   zoomPunchActive = false,
+  colorPalette,
 }) => {
+  const variation = resolveVariationWithColorPalette(rawVariation, colorPalette);
   const gradId = `bg-grad-${type}-${variation.id}-${width}x${height}`;
   const u = unit / 1080;
   const strokeW = Math.max(4, Math.round(10 * u));

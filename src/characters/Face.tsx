@@ -9,7 +9,12 @@ export interface FaceProps {
 
 export const Face: React.FC<FaceProps> = ({ emotion, mouthOpen, frame }) => {
   // Periodic natural blink every ~95 frames
-  const isBlinking = frame % 95 >= 90 && emotion !== 'shock' && emotion !== 'sleepy' && emotion !== 'laughing';
+  const isBlinking =
+    frame % 95 >= 90 &&
+    emotion !== 'shock' &&
+    emotion !== 'sleepy' &&
+    emotion !== 'laughing' &&
+    emotion !== 'excited';
 
   const renderEyes = () => {
     if (emotion === 'sleepy' || isBlinking) {
@@ -18,7 +23,7 @@ export const Face: React.FC<FaceProps> = ({ emotion, mouthOpen, frame }) => {
           <path d="M -58 -18 Q -38 -4 -18 -18" />
           <path d="M 18 -18 Q 38 -4 58 -18" />
           {emotion === 'sleepy' && (
-            <g fill="#38bdf8" stroke="none" fontWeight="800" fontFamily="Bricolage Grotesque, sans-serif">
+            <g fill="#38bdf8" stroke="none" fontWeight="800" fontFamily="Fredoka, sans-serif">
               <text x={72} y={-55 - (frame % 30)} fontSize={26} opacity={0.9}>
                 Z
               </text>
@@ -31,7 +36,7 @@ export const Face: React.FC<FaceProps> = ({ emotion, mouthOpen, frame }) => {
       );
     }
 
-    if (emotion === 'laughing') {
+    if (emotion === 'laughing' || emotion === 'excited') {
       return (
         <g stroke="#0f172a" strokeWidth={9} strokeLinecap="round" fill="none">
           <path d="M -60 -12 Q -38 -36 -16 -12" />
@@ -169,6 +174,7 @@ export const Face: React.FC<FaceProps> = ({ emotion, mouthOpen, frame }) => {
           />
         );
       case 'laughing':
+      case 'excited':
         return (
           <g transform="translate(0, 20)">
             <path

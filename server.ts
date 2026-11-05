@@ -12,7 +12,11 @@ import {
   selectVariationForIndex,
 } from './src/script/variations';
 import { createDefaultTtsProvider } from './src/voice/provider';
-import { applyAspectToTimeline, buildTimeline } from './src/timeline/builder';
+import {
+  applyAspectToTimeline,
+  buildTimeline,
+  resolveVariationWithColorPalette,
+} from './src/timeline/builder';
 import { parseTimelineStrict } from './src/timeline/schema';
 import {
   renderTimelineAllAspects,
@@ -21,6 +25,7 @@ import {
 import { createGalleryScript } from './src/render/gallery';
 import { runDoctorChecks } from './src/cli/doctor';
 import { slugify } from './src/cli/index';
+import { listAvailableSkills, loadSkillByName } from './src/skills/loader';
 
 async function startServer() {
   const app = express();
@@ -35,6 +40,23 @@ async function startServer() {
 
   app.use('/out', express.static(outDir));
   app.use('/cache', express.static(cacheDir));
+
+  app.get('/api/skills', (_req, res) => {
+    try {
+      const entries = listAvailableSkills();
+      res.json({
+        skills: entries
+          .filter((e): e is typeof e & { skill: NonNullable<typeof e.skill> } => Boolean(e.skill))
+          .map((e) => ({
+            name: e.skill.name,
+            description: e.skill.description,
+            renderParams: e.skill.renderParams,
+          })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
 
   app.get('/api/status', async (_req, res) => {
     const vsUrl = (process.env.VOICESTUDIO_URL || 'http://127.0.0.1:3900').replace(/\/+$/, '');
@@ -114,13 +136,29 @@ async function startServer() {
       const parsedAspect = AspectRatioSchema.safeParse(req.body?.aspect);
       const aspect: AspectRatio = parsedAspect.success ? parsedAspect.data : '9:16';
       const variationId = req.body?.variationId;
-      const variation =
+      const baseVariation =
         PALETTE_VARIATIONS.find((v) => v.id === variationId) ?? PALETTE_VARIATIONS[0];
       const voice = typeof req.body?.voice === 'string' ? req.body.voice : undefined;
+      const skillName =
+        typeof req.body?.skill === 'string' && req.body.skill.trim()
+          ? req.body.skill.trim()
+          : undefined;
+      const loadedSkill = skillName ? loadSkillByName(skillName) : undefined;
+      const variation = resolveVariationWithColorPalette(
+        baseVariation,
+        loadedSkill?.renderParams?.colorPalette
+      );
+
+      const sfxEnabled = typeof req.body?.sfx === 'boolean' ? req.body.sfx : true;
+      const sfxVolume =
+        typeof req.body?.sfxVolume === 'number' && !Number.isNaN(req.body.sfxVolume)
+          ? Math.max(0, Math.min(1, req.body.sfxVolume))
+          : 0.35;
 
       const { script, source, attempts } = await generateScript(topic, {
         variation,
         aspect,
+        skill: loadedSkill,
       });
       const tts = createDefaultTtsProvider();
       const seed = computeTopicSeed(topic);
@@ -129,6 +167,12 @@ async function startServer() {
         seed,
         variation,
         voice,
+        skill: loadedSkill?.name,
+        renderParams: loadedSkill?.renderParams,
+        audio: {
+          sfx: sfxEnabled,
+          sfxVolume,
+        },
       });
 
       const slugDir = path.join(outDir, slugify(topic));
@@ -164,6 +208,11 @@ async function startServer() {
 
       const maxDurationSec =
         typeof req.body?.maxDurationSec === 'number' ? req.body.maxDurationSec : undefined;
+      const sfxEnabled = typeof req.body?.sfx === 'boolean' ? req.body.sfx : undefined;
+      const sfxVolume =
+        typeof req.body?.sfxVolume === 'number' && !Number.isNaN(req.body.sfxVolume)
+          ? Math.max(0, Math.min(1, req.body.sfxVolume))
+          : undefined;
 
       let timeline;
       let providerUsed = 'mock';
@@ -195,6 +244,17 @@ async function startServer() {
         providerUsed = built.providerUsed;
       }
 
+      if (sfxEnabled !== undefined || sfxVolume !== undefined) {
+        timeline = {
+          ...timeline,
+          audio: {
+            ...timeline.audio,
+            sfx: sfxEnabled ?? timeline.audio?.sfx ?? true,
+            sfxVolume: sfxVolume ?? timeline.audio?.sfxVolume ?? 0.35,
+          },
+        };
+      }
+
       const cacheBust = Date.now();
 
       if (isAllAspects) {
@@ -202,6 +262,8 @@ async function startServer() {
           outDir,
           maxDurationSec,
           voiceProviderName: providerUsed,
+          sfx: sfxEnabled,
+          sfxVolume,
         });
         const first = allRes[0];
         const ratioItems = allRes.map((r) => ({
@@ -243,6 +305,8 @@ async function startServer() {
         timelineFilename,
         maxDurationSec,
         voiceProviderName: providerUsed,
+        sfx: sfxEnabled,
+        sfxVolume,
       });
 
       // Also save inside out/<slug>/

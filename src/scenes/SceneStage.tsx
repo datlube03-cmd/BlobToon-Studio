@@ -2,11 +2,14 @@ import React from 'react';
 import { interpolate } from 'remotion';
 import {
   AspectRatio,
+  BUNDLED_FONT_FAMILY,
   BoundingBox,
   computeBubblePlacement,
   computeStageLayout,
   measureTextWidth,
+  resolveBundledFontFamily,
 } from '../aspect';
+import { getBundledFontFaceCss } from '../fonts/bundledFont';
 import { PaletteVariation } from '../script/schema';
 import { SkillRenderParams } from '../skills/schema';
 import { TimelineScene } from '../timeline/schema';
@@ -14,6 +17,7 @@ import { Blob } from '../characters/Blob';
 import { Caption, computeCaptionLayout } from '../characters/Caption';
 import { Prop } from '../characters/Prop';
 import { SpeechBubble } from '../characters/SpeechBubble';
+import { resolveVariationWithColorPalette } from '../timeline/builder';
 import { Background } from './Background';
 
 export interface SceneStageProps {
@@ -107,7 +111,7 @@ function computeThumbnailBannerBox(layout: ReturnType<typeof computeStageLayout>
 
 export const SceneStage: React.FC<SceneStageProps> = ({
   scene,
-  variation,
+  variation: rawVariation,
   sceneFrame,
   fps,
   aspect = '9:16',
@@ -115,6 +119,7 @@ export const SceneStage: React.FC<SceneStageProps> = ({
   showSafeZones = false,
   thumbnailBannerTitle,
 }) => {
+  const variation = resolveVariationWithColorPalette(rawVariation, renderParams?.colorPalette);
   const override = scene.layoutOverrides?.[aspect];
   const layout = computeStageLayout(aspect, scene.characters, scene.props, override);
   const { width, height, unit, groundY, safeArea, chapterBadge } = layout;
@@ -127,6 +132,7 @@ export const SceneStage: React.FC<SceneStageProps> = ({
   const cameraShake = renderParams?.cameraShake ?? 'none';
   const zoomPunchOnPunchline = renderParams?.zoomPunchOnPunchline ?? false;
   const captionStyle = renderParams?.captionStyle ?? 'default';
+  const fontFamily = resolveBundledFontFamily(renderParams?.fontFamily);
 
   // Aspect-aware transition entrance during first 10 frames (skipped when transitionType is 'hard-cut')
   const transitionFrames = effectiveTransition === 'hard-cut' ? 0 : 10;
@@ -234,6 +240,9 @@ export const SceneStage: React.FC<SceneStageProps> = ({
       data-camera-shake={cameraShake}
       data-caption-style={captionStyle}
     >
+      <defs>
+        <style>{getBundledFontFaceCss()}</style>
+      </defs>
       <g transform={stageTransform || undefined} opacity={stageOpacity < 1 ? stageOpacity : undefined}>
         {/* 1. Aspect-Adaptive Background Environment */}
         <Background
@@ -246,6 +255,7 @@ export const SceneStage: React.FC<SceneStageProps> = ({
           groundY={groundY}
           cameraShake={cameraShake}
           zoomPunchActive={zoomPunchActive}
+          colorPalette={renderParams?.colorPalette}
         />
 
         {/* 2. Top Chapter Label Badge */}
@@ -267,8 +277,8 @@ export const SceneStage: React.FC<SceneStageProps> = ({
               textAnchor="middle"
               fill={variation.captionHighlight}
               fontSize={chapterBadge.fontSize}
-              fontWeight="800"
-              fontFamily="Bricolage Grotesque, sans-serif"
+              fontWeight="700"
+              fontFamily={BUNDLED_FONT_FAMILY}
               letterSpacing="1.5"
             >
               {scene.label.toUpperCase()}
@@ -347,6 +357,7 @@ export const SceneStage: React.FC<SceneStageProps> = ({
             layout={layout}
             highlightColor={variation.captionHighlight}
             captionStyle={captionStyle}
+            fontFamily={fontFamily}
           />
         )}
 

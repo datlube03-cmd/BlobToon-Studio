@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AspectRatioSchema } from '../aspect';
+import { SkillRenderParamsSchema } from '../skills/schema';
 
 export { AspectRatioSchema };
 export type { AspectRatio } from '../aspect';
@@ -12,6 +13,7 @@ export const EmotionSchema = z.enum([
   'smug',
   'sleepy',
   'laughing',
+  'excited',
 ]);
 export type Emotion = z.infer<typeof EmotionSchema>;
 
@@ -126,6 +128,36 @@ export const LayoutOverridesMapSchema = z
   .record(z.string(), AspectLayoutOverrideSchema)
   .optional();
 
+export const SFX_NAMES = [
+  'pop',
+  'boing',
+  'thud',
+  'whoosh',
+  'tick',
+  'rattle',
+  'ding',
+  'gasp',
+  'sad',
+  'buzz',
+  'swish',
+] as const;
+
+export const SfxNameSchema = z.enum(SFX_NAMES);
+export type SfxName = z.infer<typeof SfxNameSchema>;
+
+export const ManualSfxEventSchema = z.object({
+  type: SfxNameSchema,
+  atSec: z.number().min(0),
+  volume: z.number().min(0).max(1).optional(),
+  pan: z.number().min(-1).max(1).optional(),
+});
+export type ManualSfxEvent = z.infer<typeof ManualSfxEventSchema>;
+
+export const SceneSfxFieldSchema = z
+  .union([z.boolean(), z.array(ManualSfxEventSchema)])
+  .optional();
+export type SceneSfxField = z.infer<typeof SceneSfxFieldSchema>;
+
 export const ScriptSceneSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1).max(32),
@@ -136,6 +168,7 @@ export const ScriptSceneSchema = z.object({
   characters: z.array(CharacterSpecSchema).min(1).max(4),
   props: z.array(PropInstanceSchema).default([]),
   beats: z.array(BeatSchema).default([]),
+  sfx: SceneSfxFieldSchema,
   layoutOverrides: LayoutOverridesMapSchema,
 });
 export type ScriptScene = z.infer<typeof ScriptSceneSchema>;
@@ -143,6 +176,7 @@ export type ScriptScene = z.infer<typeof ScriptSceneSchema>;
 export const ScriptSchema = z.object({
   aspect: AspectRatioSchema.default('9:16'),
   skill: z.string().optional(),
+  renderParams: SkillRenderParamsSchema.optional(),
   topic: z.string().min(3),
   title: z.string().min(5).max(100),
   hook: z.string().min(5),

@@ -23,6 +23,7 @@ import {
 } from '../render/renderVideo';
 import { createGalleryScript } from '../render/gallery';
 import { Script, ScriptSchema } from '../script/schema';
+import { buildSfxDemoTimeline, probeMediaAudioMetrics } from '../sfx/demo';
 import {
   SkillDefinition,
   formatSkillsReport,
@@ -270,6 +271,48 @@ async function runCli() {
   const maxDurationSec =
     typeof flags.duration === 'string' ? parseFloat(flags.duration) : undefined;
 
+  const sfxFlag: boolean | undefined = (() => {
+    if (flags.sfx === undefined) return undefined;
+    if (typeof flags.sfx === 'boolean') return flags.sfx;
+    const val = String(flags.sfx).trim().toLowerCase();
+    if (val === 'on' || val === 'true' || val === '1') return true;
+    if (val === 'off' || val === 'false' || val === '0') return false;
+    throw new Error(`Invalid --sfx value "${flags.sfx}". Expected --sfx on or --sfx off.`);
+  })();
+
+  const sfxVolumeFlag: number | undefined = (() => {
+    const raw = flags['sfx-volume'];
+    if (raw === undefined) return undefined;
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0 || num > 1) {
+      throw new Error(`Invalid --sfx-volume value "${raw}". Expected a number between 0 and 1.`);
+    }
+    return num;
+  })();
+
+  const musicPathFlag: string | undefined =
+    typeof flags.music === 'string' && flags.music.trim()
+      ? path.resolve(flags.music.trim())
+      : undefined;
+
+  const musicVolumeFlag: number | undefined = (() => {
+    const raw = flags['music-volume'];
+    if (raw === undefined) return undefined;
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0 || num > 1) {
+      throw new Error(`Invalid --music-volume value "${raw}". Expected a number between 0 and 1.`);
+    }
+    return num;
+  })();
+
+  const cliAudioOverrides = {
+    ...(sfxFlag !== undefined ? { sfx: sfxFlag } : {}),
+    ...(sfxVolumeFlag !== undefined ? { sfxVolume: sfxVolumeFlag } : {}),
+    ...(musicPathFlag
+      ? { music: { path: musicPathFlag, volume: musicVolumeFlag ?? 0.15 } }
+      : {}),
+  };
+
   const activeSkill: SkillDefinition | undefined = (() => {
     if (flags.skill === undefined) return undefined;
     if (typeof flags.skill !== 'string' || !flags.skill.trim()) {
@@ -279,6 +322,34 @@ async function runCli() {
     }
     return loadSkillByName(flags.skill);
   })();
+
+  if (command === 'sfx:demo') {
+    const aspectSel = resolveAspectSelection(flags.aspect, '9:16');
+    const demoOutDir =
+      typeof flags.out === 'string'
+        ? path.resolve(flags.out)
+        : path.join(baseOutDir, 'sfx-demo');
+    fs.mkdirSync(demoOutDir, { recursive: true });
+    console.log(
+      `[BlobToon SFX Demo] Building 11-scene procedural SFX showcase (${aspectSel.aspect}) into ${demoOutDir}...`
+    );
+    const demoTimeline = buildSfxDemoTimeline(aspectSel.aspect);
+    const res = await renderTimelineToVideo(demoTimeline, {
+      outDir: demoOutDir,
+      aspect: aspectSel.aspect,
+      sfx: true,
+      sfxVolume: sfxVolumeFlag ?? 0.65,
+      musicPath: musicPathFlag,
+      musicVolume: musicVolumeFlag,
+      onProgress: (pct, stage) => console.log(`[BlobToon SFX Demo] ${pct}% - ${stage}`),
+    });
+    const probe = await probeMediaAudioMetrics(res.videoPath);
+    console.log(`[BlobToon SFX Demo] Complete!`);
+    console.log(`  MP4 Video    : ${res.videoPath} (${res.width}x${res.height}, ${res.durationSec}s)`);
+    console.log(`  Thumbnail    : ${res.thumbnailPath}`);
+    console.log(`  Audio Stream : ${probe.audioCodec} (RMS=${probe.rms}, peak=${probe.peak}, diff=${probe.durationDiffMs}ms)`);
+    return;
+  }
 
   if (command === 'skills') {
     const entries = listAvailableSkills();
@@ -388,6 +459,10 @@ async function runCli() {
       );
       const results = await renderTimelineAllAspects(timeline, {
         outDir: baseOutDir,
+        sfx: sfxFlag,
+        sfxVolume: sfxVolumeFlag,
+        musicPath: musicPathFlag,
+        musicVolume: musicVolumeFlag,
         maxDurationSec,
         voiceProviderName: providerUsed,
         onProgress: (pct, stage) => console.log(`[BlobToon Render] ${pct}% - ${stage}`),
@@ -405,6 +480,10 @@ async function runCli() {
     const result = await renderTimelineToVideo(timeline, {
       outDir: baseOutDir,
       aspect: aspectSel.aspect,
+      sfx: sfxFlag,
+      sfxVolume: sfxVolumeFlag,
+      musicPath: musicPathFlag,
+      musicVolume: musicVolumeFlag,
       maxDurationSec,
       voiceProviderName: providerUsed,
       onProgress: (pct, stage) => console.log(`[BlobToon Render] ${pct}% - ${stage}`),
@@ -507,6 +586,7 @@ async function runCli() {
       seed,
       skill: activeSkill?.name,
       renderParams: activeSkill?.renderParams,
+      audio: cliAudioOverrides,
       voice,
       variation,
     });
@@ -517,6 +597,10 @@ async function runCli() {
     if (aspectSel.mode === 'all') {
       const results = await renderTimelineAllAspects(timeline, {
         outDir: slugOutDir,
+        sfx: sfxFlag,
+        sfxVolume: sfxVolumeFlag,
+        musicPath: musicPathFlag,
+        musicVolume: musicVolumeFlag,
         maxDurationSec,
         voiceProviderName: providerUsed,
         onProgress: (pct, stage) => console.log(`[BlobToon Make] 3/4 ${pct}% - ${stage}`),
@@ -536,6 +620,10 @@ async function runCli() {
     const result = await renderTimelineToVideo(timeline, {
       outDir: slugOutDir,
       aspect: aspectSel.aspect,
+      sfx: sfxFlag,
+      sfxVolume: sfxVolumeFlag,
+      musicPath: musicPathFlag,
+      musicVolume: musicVolumeFlag,
       maxDurationSec,
       voiceProviderName: providerUsed,
       onProgress: (pct, stage) => console.log(`[BlobToon Make] 3/4 ${pct}% - ${stage}`),
@@ -614,6 +702,9 @@ async function runCli() {
       const { timeline, providerUsed } = await buildTimeline(script, tts, {
         aspect: aspectSel.aspect,
         seed,
+        skill: activeSkill?.name,
+        renderParams: activeSkill?.renderParams,
+        audio: cliAudioOverrides,
         voice,
         variation,
       });
@@ -621,6 +712,10 @@ async function runCli() {
       if (aspectSel.mode === 'all') {
         const allRes = await renderTimelineAllAspects(timeline, {
           outDir: itemOutDir,
+          sfx: sfxFlag,
+          sfxVolume: sfxVolumeFlag,
+          musicPath: musicPathFlag,
+          musicVolume: musicVolumeFlag,
           maxDurationSec,
           voiceProviderName: providerUsed,
         });
@@ -639,6 +734,10 @@ async function runCli() {
         const res = await renderTimelineToVideo(timeline, {
           outDir: itemOutDir,
           aspect: aspectSel.aspect,
+          sfx: sfxFlag,
+          sfxVolume: sfxVolumeFlag,
+          musicPath: musicPathFlag,
+          musicVolume: musicVolumeFlag,
           maxDurationSec,
           voiceProviderName: providerUsed,
         });
@@ -667,11 +766,12 @@ async function runCli() {
 
   console.log(`BlobToon CLI
 Usage:
-  npm run make -- "topic" [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--voice X] [--out out/]
+  npm run make -- "topic" [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35] [--music <file>] [--music-volume 0.15]
   npm run skills
+  npm run sfx:demo
   npm run script -- "topic" [--skill <name>] [--aspect 9:16|16:9|4:3|3:4] [--out out/]
-  npm run render -- [path/to/timeline.json] [--gallery] [--aspect 9:16|16:9|4:3|3:4|all] [--out out/]
-  npm run batch -- topics.txt [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--out out/batch]
+  npm run render -- [path/to/timeline.json] [--gallery] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35] [--music <file>]
+  npm run batch -- topics.txt [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35]
   npm run ideas -- "niche" [--count 10]
   npm run doctor
   npm run preview`);

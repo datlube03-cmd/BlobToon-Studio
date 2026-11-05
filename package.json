@@ -15,6 +15,7 @@
     "doctor": "tsx src/cli/index.ts doctor",
     "ideas": "tsx src/cli/index.ts ideas",
     "skills": "tsx src/cli/index.ts skills",
+    "sfx:demo": "tsx src/cli/index.ts sfx:demo",
     "test": "tsx --test tests/blobtoon.test.ts",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
@@ -32,6 +33,7 @@
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "opentype.js": "^2.0.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "remotion": "^4.0.541",

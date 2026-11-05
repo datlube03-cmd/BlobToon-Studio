@@ -10,6 +10,14 @@ import {
   AspectRatio,
   getAspectPreset,
 } from '../aspect';
+import { collectSfxEvents } from '../sfx/events';
+import {
+  SFX_MAX_PEAK,
+  SFX_REGISTRY,
+  normalizeSamples,
+  synthesizeProceduralBgm,
+  synthesizeSfx,
+} from '../sfx/synth';
 import { Timeline, VideoMeta } from '../timeline/schema';
 import { applyAspectToTimeline, buildVideoMeta } from '../timeline/builder';
 import { SceneStage } from '../scenes/SceneStage';
@@ -20,6 +28,10 @@ const execFileAsync = promisify(execFile);
 export interface RenderOptions {
   outDir: string;
   aspect?: AspectRatio;
+  sfx?: boolean;
+  sfxVolume?: number;
+  musicPath?: string;
+  musicVolume?: number;
   videoFilename?: string;
   thumbnailFilename?: string;
   metaFilename?: string;
@@ -61,7 +73,8 @@ export async function ensureFfmpegInstalled(): Promise<void> {
 
 /**
  * Concatenates or pads each scene's WAV audio file so it aligns strictly with
- * `scene.durationSec` (voice + padding) and produces a single master WAV file.
+ * `scene.durationSec` (voice + padding) and mixes frame-accurate SFX + optional music.
+ * If SFX or music mixing fails for any reason, prints a warning and falls back to voice-only.
  */
 async function buildMasterTimelineAudioWav(
   timeline: Timeline,
@@ -74,27 +87,29 @@ async function buildMasterTimelineAudioWav(
   const totalDurationSec = maxFrames / timeline.fps;
   const totalSamples = Math.max(1, Math.round(totalDurationSec * sampleRate));
   const masterDataSize = totalSamples * bytesPerSample;
-  const masterBuffer = Buffer.alloc(44 + masterDataSize);
+  const voiceBuffer = Buffer.alloc(44 + masterDataSize);
 
-  // Write WAV header for master track
-  masterBuffer.write('RIFF', 0);
-  masterBuffer.writeUInt32LE(36 + masterDataSize, 4);
-  masterBuffer.write('WAVE', 8);
-  masterBuffer.write('fmt ', 12);
-  masterBuffer.writeUInt32LE(16, 16);
-  masterBuffer.writeUInt16LE(1, 20);
-  masterBuffer.writeUInt16LE(1, 22);
-  masterBuffer.writeUInt32LE(sampleRate, 24);
-  masterBuffer.writeUInt32LE(sampleRate * bytesPerSample, 28);
-  masterBuffer.writeUInt16LE(bytesPerSample, 32);
-  masterBuffer.writeUInt16LE(16, 34);
-  masterBuffer.write('data', 36);
-  masterBuffer.writeUInt32LE(masterDataSize, 40);
+  // Write WAV header for voice/master track
+  voiceBuffer.write('RIFF', 0);
+  voiceBuffer.writeUInt32LE(36 + masterDataSize, 4);
+  voiceBuffer.write('WAVE', 8);
+  voiceBuffer.write('fmt ', 12);
+  voiceBuffer.writeUInt32LE(16, 16);
+  voiceBuffer.writeUInt16LE(1, 20);
+  voiceBuffer.writeUInt16LE(1, 22);
+  voiceBuffer.writeUInt32LE(sampleRate, 24);
+  voiceBuffer.writeUInt32LE(sampleRate * bytesPerSample, 28);
+  voiceBuffer.writeUInt16LE(bytesPerSample, 32);
+  voiceBuffer.writeUInt16LE(16, 34);
+  voiceBuffer.write('data', 36);
+  voiceBuffer.writeUInt32LE(masterDataSize, 40);
 
   const mock = new MockProvider();
   if (audioExportDir) {
     fs.mkdirSync(audioExportDir, { recursive: true });
   }
+
+  const voiceActiveSpans: Array<{ startSample: number; endSample: number }> = [];
 
   for (let idx = 0; idx < timeline.scenes.length; idx++) {
     const scene = timeline.scenes[idx];
@@ -102,7 +117,11 @@ async function buildMasterTimelineAudioWav(
 
     let audioPath = scene.audioFile;
     if (!audioPath || !fs.existsSync(audioPath)) {
-      const synth = await mock.synthesize(scene.narration);
+      const synth = await mock.synthesize(
+        scene.narration,
+        undefined,
+        timeline.renderParams?.ttsSpeedMultiplier ?? 1.0
+      );
       audioPath = synth.file;
       scene.audioFile = audioPath;
     }
@@ -116,6 +135,13 @@ async function buildMasterTimelineAudioWav(
         fs.copyFileSync(audioPath, destFile);
       }
     }
+
+    const startSample = Math.round((scene.startFrame / timeline.fps) * sampleRate);
+    const voiceEndSample = Math.min(
+      totalSamples,
+      startSample + Math.round(scene.voiceDurationSec * sampleRate)
+    );
+    voiceActiveSpans.push({ startSample, endSample: voiceEndSample });
 
     const normWav = path.join(tempDir, `norm_${scene.id}.wav`);
     try {
@@ -138,12 +164,11 @@ async function buildMasterTimelineAudioWav(
         dataOffset = dataIdx + 8;
       }
       const pcmBytes = sceneBuf.subarray(dataOffset);
-      const startSample = Math.round((scene.startFrame / timeline.fps) * sampleRate);
       const targetByteOffset = 44 + startSample * bytesPerSample;
-      const availableSpace = masterBuffer.length - targetByteOffset;
+      const availableSpace = voiceBuffer.length - targetByteOffset;
       if (availableSpace > 0) {
         pcmBytes.copy(
-          masterBuffer,
+          voiceBuffer,
           targetByteOffset,
           0,
           Math.min(pcmBytes.length, availableSpace)
@@ -154,9 +179,111 @@ async function buildMasterTimelineAudioWav(
     }
   }
 
-  const masterWavPath = path.join(tempDir, 'master_audio.wav');
-  fs.writeFileSync(masterWavPath, masterBuffer);
-  return masterWavPath;
+  const voiceOnlyWavPath = path.join(tempDir, 'voice_only.wav');
+  fs.writeFileSync(voiceOnlyWavPath, voiceBuffer);
+
+  // Mix SFX + optional music into masterBuffer; fall back to voiceOnlyWavPath on any error (Change F6)
+  try {
+    const masterBuffer = Buffer.from(voiceBuffer);
+    const mixFloat = new Float32Array(totalSamples);
+    for (let i = 0; i < totalSamples; i++) {
+      mixFloat[i] = masterBuffer.readInt16LE(44 + i * 2) / 32768;
+    }
+
+    // 1. Mix frame-accurate SFX events (Change F3: base ~ -18 dB relative to voice, never louder than voice)
+    const sfxEnabled = timeline.audio?.sfx ?? true;
+    if (sfxEnabled) {
+      const events = collectSfxEvents(timeline, timeline.fps);
+      const baseDbLinear = 0.1259; // -18 dB
+      for (const ev of events) {
+        if (ev.frame >= maxFrames) continue;
+        // Ensure cached WAV exists in cache/sfx/<name>_<variant>.wav
+        synthesizeSfx(ev.type, ev.variant);
+        const def = SFX_REGISTRY[ev.type];
+        if (!def) continue;
+        const { normalized } = normalizeSamples(
+          def.renderSamples(ev.variant, sampleRate),
+          SFX_MAX_PEAK
+        );
+        const startSample = Math.round((ev.frame / timeline.fps) * sampleRate);
+        // Scale by event volume relative to default 0.35 so base sits around -18 dB
+        const gain = Math.min(0.45, baseDbLinear * (ev.volume / 0.35) * 2.2);
+        for (let s = 0; s < normalized.length && startSample + s < totalSamples; s++) {
+          mixFloat[startSample + s] += normalized[s] * gain;
+        }
+      }
+    }
+
+    // 2. Mix optional background music (from --music path or skill renderParams.bgmGenre)
+    let musicSourcePath = timeline.audio?.music?.path;
+    const musicVol = timeline.audio?.music?.volume ?? 0.15;
+    if (!musicSourcePath && timeline.renderParams?.bgmGenre) {
+      musicSourcePath = synthesizeProceduralBgm(
+        timeline.renderParams.bgmGenre,
+        totalDurationSec
+      );
+    }
+
+    if (musicSourcePath && fs.existsSync(musicSourcePath) && musicVol > 0) {
+      const musicNormWav = path.join(tempDir, 'norm_music.wav');
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-stream_loop',
+        '-1',
+        '-i',
+        musicSourcePath,
+        '-t',
+        String(totalDurationSec),
+        '-ar',
+        String(sampleRate),
+        '-ac',
+        '1',
+        '-c:a',
+        'pcm_s16le',
+        musicNormWav,
+      ]);
+      const musicBuf = fs.readFileSync(musicNormWav);
+      let mOffset = 44;
+      const mIdx = musicBuf.indexOf('data');
+      if (mIdx !== -1 && mIdx + 8 <= musicBuf.length) {
+        mOffset = mIdx + 8;
+      }
+      const mSamples = Math.floor((musicBuf.length - mOffset) / 2);
+      const fadeSamples = Math.min(Math.round(sampleRate * 0.4), Math.floor(totalSamples / 4));
+      const duckLinear = 0.35; // ~ -9 dB duck under voiceover
+
+      for (let i = 0; i < Math.min(totalSamples, mSamples); i++) {
+        const mVal = musicBuf.readInt16LE(mOffset + i * 2) / 32768;
+        let fade = 1.0;
+        if (fadeSamples > 0 && i < fadeSamples) {
+          fade = i / fadeSamples;
+        } else if (fadeSamples > 0 && i > totalSamples - fadeSamples) {
+          fade = Math.max(0, (totalSamples - i) / fadeSamples);
+        }
+        const isVoiceActive = voiceActiveSpans.some(
+          (sp) => i >= sp.startSample && i <= sp.endSample
+        );
+        const duck = isVoiceActive ? duckLinear : 1.0;
+        mixFloat[i] += mVal * musicVol * fade * duck;
+      }
+    }
+
+    for (let i = 0; i < totalSamples; i++) {
+      const clamped = Math.max(-0.95, Math.min(0.95, mixFloat[i]));
+      masterBuffer.writeInt16LE(Math.round(clamped * 32767), 44 + i * 2);
+    }
+
+    const masterWavPath = path.join(tempDir, 'master_audio.wav');
+    fs.writeFileSync(masterWavPath, masterBuffer);
+    return masterWavPath;
+  } catch (mixErr) {
+    console.warn(
+      `[BlobToon Audio] Warning: SFX/music mixing encountered an error (${
+        mixErr instanceof Error ? mixErr.message : String(mixErr)
+      }). Falling back to voice-only audio track.`
+    );
+    return voiceOnlyWavPath;
+  }
 }
 
 export function renderFrameSvgMarkup(
@@ -203,7 +330,7 @@ export function renderFrameSvgMarkup(
 
 /**
  * Renders a validated Timeline JSON into:
- * - MP4 video at the chosen aspect ratio (9:16, 16:9, 4:3, or 3:4) with muxed voiceover audio
+ * - MP4 video at the chosen aspect ratio (9:16, 16:9, 4:3, or 3:4) with muxed voiceover + SFX + music
  * - Thumbnail PNG matching the chosen aspect (and for 16:9, a 1280x720 thumbnail.png)
  * - meta.json & timeline.json
  */
@@ -215,7 +342,31 @@ export async function renderTimelineToVideo(
 
   const targetAspect: AspectRatio = options.aspect ?? inputTimeline.aspect ?? '9:16';
   const preset = getAspectPreset(targetAspect);
-  const timeline = applyAspectToTimeline(inputTimeline, targetAspect);
+  const baseTimeline = applyAspectToTimeline(inputTimeline, targetAspect);
+
+  // Apply CLI/option overrides for SFX and background music (Change F4)
+  const timeline: Timeline = {
+    ...baseTimeline,
+    audio: {
+      sfx: options.sfx ?? baseTimeline.audio?.sfx ?? true,
+      sfxVolume: options.sfxVolume ?? baseTimeline.audio?.sfxVolume ?? 0.35,
+      ...(options.musicPath
+        ? {
+            music: {
+              path: path.resolve(options.musicPath),
+              volume: options.musicVolume ?? baseTimeline.audio?.music?.volume ?? 0.15,
+            },
+          }
+        : baseTimeline.audio?.music
+        ? {
+            music: {
+              path: baseTimeline.audio.music.path,
+              volume: options.musicVolume ?? baseTimeline.audio.music.volume ?? 0.15,
+            },
+          }
+        : {}),
+    },
+  };
 
   const outDir = path.resolve(options.outDir);
   fs.mkdirSync(outDir, { recursive: true });
@@ -298,6 +449,7 @@ export async function renderTimelineToVideo(
       70,
       `Encoding ${timeline.width}x${timeline.height} 30fps H.264 MP4 with ffmpeg`
     );
+    const targetDurSec = Number((totalFrames / timeline.fps).toFixed(4));
     await execFileAsync('ffmpeg', [
       '-y',
       '-framerate',
@@ -308,6 +460,8 @@ export async function renderTimelineToVideo(
       masterWavPath,
       '-vf',
       `scale=${timeline.width}:${timeline.height}:flags=lanczos,format=yuv420p`,
+      '-af',
+      `apad,atrim=0:${targetDurSec}`,
       '-c:v',
       'libx264',
       '-preset',

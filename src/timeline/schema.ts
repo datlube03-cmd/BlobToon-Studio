@@ -6,13 +6,37 @@ import {
   BeatSchema,
   CharacterSpecSchema,
   LayoutOverridesMapSchema,
+  ManualSfxEventSchema,
   PaletteVariationSchema,
   PropInstanceSchema,
+  SceneSfxFieldSchema,
+  SFX_NAMES,
+  SfxNameSchema,
   TransitionTypeSchema,
 } from '../script/schema';
 
-export { SkillRenderParamsSchema };
+export {
+  SkillRenderParamsSchema,
+  SFX_NAMES,
+  SfxNameSchema,
+  ManualSfxEventSchema,
+  SceneSfxFieldSchema,
+};
 export type { SkillRenderParams } from '../skills/schema';
+export type { SfxName, ManualSfxEvent, SceneSfxField } from '../script/schema';
+
+export const TimelineMusicConfigSchema = z.object({
+  path: z.string().min(1),
+  volume: z.number().min(0).max(1).default(0.15),
+});
+export type TimelineMusicConfig = z.infer<typeof TimelineMusicConfigSchema>;
+
+export const TimelineAudioConfigSchema = z.object({
+  sfx: z.boolean().default(true),
+  sfxVolume: z.number().min(0).max(1).default(0.35),
+  music: TimelineMusicConfigSchema.optional(),
+});
+export type TimelineAudioConfig = z.infer<typeof TimelineAudioConfigSchema>;
 
 export const WordTimingSchema = z.object({
   word: z.string().min(1),
@@ -41,6 +65,7 @@ export const TimelineSceneSchema = z.object({
   characters: z.array(CharacterSpecSchema).min(1),
   props: z.array(PropInstanceSchema).default([]),
   beats: z.array(BeatSchema).default([]),
+  sfx: SceneSfxFieldSchema,
   layoutOverrides: LayoutOverridesMapSchema,
 });
 export type TimelineScene = z.infer<typeof TimelineSceneSchema>;
@@ -51,6 +76,7 @@ export const TimelineSchema = z.object({
   seed: z.number().int().default(42),
   skill: z.string().optional(),
   renderParams: SkillRenderParamsSchema.optional(),
+  audio: TimelineAudioConfigSchema.default({ sfx: true, sfxVolume: 0.35 }),
   topic: z.string().min(1),
   title: z.string().min(1),
   hook: z.string().min(1),
@@ -66,6 +92,13 @@ export const TimelineSchema = z.object({
 });
 export type Timeline = z.infer<typeof TimelineSchema>;
 
+export const VideoMetaAudioSchema = z.object({
+  sfx: z.boolean(),
+  sfxVolume: z.number(),
+  sfxEventCount: z.number().int().min(0).optional(),
+  music: TimelineMusicConfigSchema.optional(),
+});
+
 export const VideoMetaSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
@@ -75,6 +108,7 @@ export const VideoMetaSchema = z.object({
   seed: z.number().int().default(42),
   skill: z.string().optional(),
   renderParams: SkillRenderParamsSchema.optional(),
+  audio: VideoMetaAudioSchema.optional(),
   durationSec: z.number().positive(),
   totalFrames: z.number().int().positive(),
   fps: z.number().int().positive(),
