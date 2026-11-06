@@ -45,6 +45,8 @@ export interface CliFlags {
   mock: boolean;
   mockTts: boolean;
   gallery: boolean;
+  draft: boolean;
+  quality?: 'final' | 'draft';
   voice?: string;
   speed?: number;
   outDir?: string;
@@ -63,6 +65,8 @@ export function parseCliArgs(argv: string[]): { command: string; flags: CliFlags
   let mock = false;
   let mockTts = false;
   let gallery = false;
+  let draft = false;
+  let quality: 'final' | 'draft' | undefined;
   let voice: string | undefined;
   let speed: number | undefined;
   let outDir: string | undefined;
@@ -81,6 +85,17 @@ export function parseCliArgs(argv: string[]): { command: string; flags: CliFlags
       mockTts = true;
     } else if (arg === '--gallery') {
       gallery = true;
+    } else if (arg === '--draft') {
+      draft = true;
+      quality = 'draft';
+    } else if (arg === '--quality' && args[i + 1]) {
+      const q = args[++i].toLowerCase();
+      quality = q === 'draft' ? 'draft' : 'final';
+      draft = quality === 'draft';
+    } else if (arg.startsWith('--quality=')) {
+      const q = arg.slice('--quality='.length).toLowerCase();
+      quality = q === 'draft' ? 'draft' : 'final';
+      draft = quality === 'draft';
     } else if (arg === '--voice' && args[i + 1]) {
       voice = args[++i];
     } else if (arg.startsWith('--voice=')) {
@@ -133,6 +148,8 @@ export function parseCliArgs(argv: string[]): { command: string; flags: CliFlags
       mock,
       mockTts,
       gallery,
+      draft,
+      quality,
       voice,
       speed,
       outDir,
@@ -394,7 +411,7 @@ function logRenderSummary(
   console.log(`  - Timeline JSON: ${res.timelinePath}`);
   console.log(`  - Meta JSON:     ${res.metaPath}`);
   console.log(
-    `  - Specs:         ${res.width}x${res.height} @ ${res.fps}fps (${res.durationSec}s, ${res.totalFrames} frames, TTS: ${providerUsed})\n`
+    `  - Specs:         ${res.width}x${res.height} @ ${res.fps}fps (${res.durationSec}s, ${res.totalFrames} frames, Engine: ${res.renderEngine}, TTS: ${providerUsed})\n`
   );
 }
 
@@ -494,6 +511,8 @@ async function renderLoadedScript(
       sfx: flags.sfx,
       sfxVolume: flags.sfxVolume,
       musicPath: flags.music,
+      draft: flags.draft,
+      quality: flags.quality,
     });
     for (const r of results) {
       logRenderSummary(r, providerUsed);
@@ -507,6 +526,8 @@ async function renderLoadedScript(
       sfx: flags.sfx,
       sfxVolume: flags.sfxVolume,
       musicPath: flags.music,
+      draft: flags.draft,
+      quality: flags.quality,
     });
     logRenderSummary(res, providerUsed);
   }
@@ -719,6 +740,8 @@ export async function runCli(argv = process.argv): Promise<void> {
             sfx: flags.sfx,
             sfxVolume: flags.sfxVolume,
             musicPath: flags.music,
+            draft: flags.draft,
+            quality: flags.quality,
           });
           for (const r of results) {
             logRenderSummary(r, 'mock');
@@ -735,6 +758,8 @@ export async function runCli(argv = process.argv): Promise<void> {
             sfx: flags.sfx,
             sfxVolume: flags.sfxVolume,
             musicPath: flags.music,
+            draft: flags.draft,
+            quality: flags.quality,
           });
           logRenderSummary(res, 'mock');
         }
@@ -782,6 +807,8 @@ export async function runCli(argv = process.argv): Promise<void> {
           sfx: flags.sfx,
           sfxVolume: flags.sfxVolume,
           musicPath: flags.music,
+          draft: flags.draft,
+          quality: flags.quality,
         });
         for (const r of results) {
           logRenderSummary(r, 'cached');
@@ -798,6 +825,8 @@ export async function runCli(argv = process.argv): Promise<void> {
           sfx: flags.sfx,
           sfxVolume: flags.sfxVolume,
           musicPath: flags.music,
+          draft: flags.draft,
+          quality: flags.quality,
         });
         logRenderSummary(res, 'cached');
       }

@@ -59,6 +59,7 @@ import {
 import { Prop } from './characters/Prop';
 import { Background } from './scenes/Background';
 import { useLoadBundledFontInRemotion } from './fonts/bundledFont';
+import { Locale, getDictionary } from './i18n';
 
 const DEFAULT_DEMO_SCRIPT_TEXT = `title: What if Mom played on your Roblox account?
 aspect: 9:16
@@ -229,6 +230,9 @@ export default function App() {
   useLoadBundledFontInRemotion();
   const registeredCharacters = listCharacterDefinitions();
 
+  const [locale, setLocale] = useState<Locale>('vi');
+  const t = getDictionary(locale);
+
   const [activeTab, setActiveTab] = useState<StudioTab>('studio');
   const [scriptText, setScriptText] = useState<string>(DEFAULT_DEMO_SCRIPT_TEXT);
   const [scriptPathLabel, setScriptPathLabel] = useState<string>('examples/demo.script.txt');
@@ -340,7 +344,7 @@ export default function App() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && Array.isArray(data.projects) && data.projects.length > 0) {
-          setProjectsList([
+          const merged: ProjectOption[] = [
             ...data.projects,
             {
               id: 'preset:robot',
@@ -348,7 +352,14 @@ export default function App() {
               path: 'examples/robot.script.txt',
               scriptText: ROBOT_DEMO_SCRIPT_TEXT,
             },
-          ]);
+          ];
+          const seenPaths = new Set<string>();
+          const uniqueProjects = merged.filter((p) => {
+            if (!p || !p.path || seenPaths.has(p.path)) return false;
+            seenPaths.add(p.path);
+            return true;
+          });
+          setProjectsList(uniqueProjects);
         }
       })
       .catch(() => {});
@@ -434,7 +445,7 @@ export default function App() {
   const handleParseAndBuildTimeline = async (overrideScriptText?: string) => {
     const rawText = (overrideScriptText ?? scriptText).trim();
     if (!rawText) {
-      setErrorBanner('Vui lòng nhập nội dung kịch bản (.script.txt) trước khi biên dịch Timeline.');
+      setErrorBanner(t.notices.emptyScriptError);
       return;
     }
 
@@ -476,13 +487,18 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Biên dịch kịch bản thất bại');
+        throw new Error(data.error || t.notices.compileFailedError);
       }
       setTimeline(data.timeline);
       setCurrentFrame(0);
       setSelectedSceneIdx(0);
       setRenderNotice(
-        `Hợp lệ! Đã dựng ${data.timeline.scenes.length} cảnh (${data.timeline.totalDurationSec}s, tỷ lệ ${data.timeline.aspect}) với ${data.providerUsed} TTS.`
+        t.notices.compileSuccess(
+          data.timeline.scenes.length,
+          data.timeline.totalDurationSec,
+          data.timeline.aspect,
+          data.providerUsed
+        )
       );
     } catch (err) {
       // Fallback to browser preview timeline if server is offline
@@ -500,7 +516,10 @@ export default function App() {
       setCurrentFrame(0);
       setSelectedSceneIdx(0);
       setRenderNotice(
-        `Đã kiểm tra hợp lệ và dựng ${localTimeline.scenes.length} cảnh (${localTimeline.totalDurationSec}s) trực tiếp trên trình duyệt.`
+        t.notices.compileFallbackSuccess(
+          localTimeline.scenes.length,
+          localTimeline.totalDurationSec
+        )
       );
       if (err instanceof Error && err.message.startsWith('line ')) {
         setErrorBanner(err.message);
@@ -524,9 +543,9 @@ export default function App() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Không thể lưu dự án');
+      if (!res.ok) throw new Error(data.error || t.notices.saveProjectFailed);
       setScriptPathLabel(data.path);
-      setRenderNotice(`Đã lưu kịch bản vào ${data.path}`);
+      setRenderNotice(t.notices.saveProjectSuccess(data.path));
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
     }
@@ -547,10 +566,10 @@ export default function App() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Không thể tổng hợp giọng thử');
+      if (!res.ok) throw new Error(data.error || t.notices.auditionFailed);
       setAuditionAudioUrl(data.audioUrl);
       setRenderNotice(
-        `Đã tạo âm thanh thử giọng "${data.voiceUsed}" (${data.durationSec}s qua ${data.provider}).`
+        t.notices.auditionSuccess(data.voiceUsed, data.durationSec, data.provider)
       );
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -564,10 +583,10 @@ export default function App() {
     setIsRenderingVideo(true);
     setRenderNotice(
       selectedAspect === 'all'
-        ? 'Đang kết xuất cả 4 tỷ lệ khung hình (9:16, 16:9, 4:3, 3:4) ở 30fps...'
+        ? t.notices.renderingAllAspects
         : galleryMode
-        ? `Đang kết xuất Video Bộ Sưu Tập (${activePreset.width}x${activePreset.height} @ 30fps)...`
-        : `Đang kết xuất ${activePreset.width}x${activePreset.height} (${previewAspect}) @ 30fps MP4 + Ảnh Bìa PNG...`
+        ? t.notices.renderingGallery(activePreset.width, activePreset.height)
+        : t.notices.renderingSingle(activePreset.width, activePreset.height, previewAspect)
     );
 
     try {
@@ -585,7 +604,7 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Kết xuất thất bại');
+        throw new Error(data.error || t.notices.renderFailed);
       }
       setRenderedVideoUrl(data.videoUrl);
       setRenderedThumbUrl(data.thumbnailUrl);
@@ -593,8 +612,14 @@ export default function App() {
       setRenderedAllRatios(Array.isArray(data.allRatios) ? data.allRatios : []);
       setRenderNotice(
         selectedAspect === 'all'
-          ? 'Đã kết xuất đủ 4 tỷ lệ khung hình (out_9x16.mp4, out_16x9.mp4, out_4x3.mp4, out_3x4.mp4) và ảnh bìa.'
-          : `Đã kết xuất ${data.width}x${data.height} (${data.aspect ?? previewAspect}) ${data.fps}fps MP4 (${data.durationSec}s) và Ảnh Bìa PNG.`
+          ? t.notices.renderAllSuccess
+          : t.notices.renderSingleSuccess(
+              data.width,
+              data.height,
+              data.aspect ?? previewAspect,
+              data.fps,
+              data.durationSec
+            )
       );
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -606,10 +631,10 @@ export default function App() {
   const handleRunBatch = async () => {
     const paths = batchPathsText
       .split(/\r?\n/)
-      .map((t) => t.trim())
+      .map((line) => line.trim())
       .filter(Boolean);
     if (paths.length === 0) {
-      setErrorBanner('Vui lòng nhập ít nhất một đường dẫn tệp kịch bản (.script.txt / .script.json).');
+      setErrorBanner(t.notices.emptyBatchPathsError);
       return;
     }
     setErrorBanner(null);
@@ -624,7 +649,7 @@ export default function App() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Chạy hàng loạt thất bại');
+      if (!res.ok) throw new Error(data.error || t.notices.batchFailedError);
       setBatchResults(data.items || []);
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -676,7 +701,7 @@ export default function App() {
           }}
           className="text-xl font-extrabold tracking-tight text-amber-400 font-display whitespace-nowrap shrink-0"
         >
-          BlobToon Việt Nam
+          {t.brandTitle}
         </a>
 
         {/* Zone 2: 4 Single-line Navigation Links */}
@@ -688,7 +713,7 @@ export default function App() {
               activeTab === 'studio' ? 'text-amber-300 border-b-2 border-amber-400' : ''
             }`}
           >
-            Trình Soạn Kịch Bản (.script.txt)
+            {t.nav.studio}
           </button>
           <button
             type="button"
@@ -697,7 +722,7 @@ export default function App() {
               activeTab === 'gallery' ? 'text-amber-300 border-b-2 border-amber-400' : ''
             }`}
           >
-            Kho Nhân Vật (Blob &amp; Robot)
+            {t.nav.gallery}
           </button>
           <button
             type="button"
@@ -706,7 +731,7 @@ export default function App() {
               activeTab === 'batch' ? 'text-amber-300 border-b-2 border-amber-400' : ''
             }`}
           >
-            Kết Xuất Hàng Loạt
+            {t.nav.batch}
           </button>
           <button
             type="button"
@@ -715,16 +740,26 @@ export default function App() {
               activeTab === 'cli' ? 'text-amber-300 border-b-2 border-amber-400' : ''
             }`}
           >
-            Lệnh CLI &amp; Schema JSON
+            {t.nav.cli}
           </button>
         </nav>
 
-        {/* Zone 3: Aspect Selector + SFX Toggle & Volume Slider + Render Button */}
+        {/* Zone 3: Language Switch + Aspect Selector + SFX Toggle & Volume Slider + Render Button */}
         <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            data-testid="locale-toggle"
+            aria-label={t.header.langToggleAria}
+            onClick={() => setLocale((prev) => (prev === 'vi' ? 'en' : 'vi'))}
+            className="px-2 py-1.5 text-xs font-bold bg-[#22120d] border border-[#4d291f] text-amber-300 rounded-lg hover:border-amber-400 cursor-pointer uppercase"
+          >
+            {locale}
+          </button>
+
           <select
             id="header-aspect-select"
             data-testid="aspect-selector"
-            aria-label="Chọn tỷ lệ khung hình"
+            aria-label={t.header.aspectLabel}
             value={selectedAspect}
             onChange={(e) => handleAspectChange(e.target.value as AspectSelection)}
             className="px-2.5 py-2 text-xs font-semibold bg-[#22120d] border border-[#4d291f] text-amber-50 rounded-lg focus:outline-none focus:border-amber-400 cursor-pointer"
@@ -737,26 +772,26 @@ export default function App() {
                 </option>
               );
             })}
-            <option value="all">Tất cả (4 tỷ lệ)</option>
+            <option value="all">{t.header.allAspectsOption}</option>
           </select>
 
           <div className="flex items-center gap-2 px-2.5 py-1.5 bg-[#22120d] border border-[#4d291f] rounded-lg">
             <button
               type="button"
               data-testid="sfx-toggle"
-              aria-label={sfxEnabled ? 'Tắt hiệu ứng âm thanh' : 'Bật hiệu ứng âm thanh'}
+              aria-label={sfxEnabled ? t.header.sfxMuteAria : t.header.sfxUnmuteAria}
               onClick={handleSfxToggle}
               className={`flex items-center gap-1 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0 ${
                 sfxEnabled ? 'text-amber-400' : 'text-amber-200/40'
               }`}
             >
               {sfxEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-              <span>SFX {sfxEnabled ? 'BẬT' : 'TẮT'}</span>
+              <span>{sfxEnabled ? t.header.sfxOn : t.header.sfxOff}</span>
             </button>
             <input
               type="range"
               data-testid="sfx-volume-slider"
-              aria-label="Âm lượng SFX"
+              aria-label={t.header.sfxVolumeAria}
               min={0}
               max={1}
               step={0.05}
@@ -777,7 +812,7 @@ export default function App() {
             className="px-4 py-2 text-xs font-semibold text-[#1a0b08] bg-amber-400 hover:bg-amber-300 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-2 cursor-pointer"
           >
             <Film className="w-4 h-4" />
-            <span>{isRenderingVideo ? 'Đang xuất MP4...' : 'Xuất Video MP4 & Ảnh Bìa'}</span>
+            <span>{isRenderingVideo ? t.header.renderingBtn : t.header.renderBtn}</span>
           </button>
         </div>
       </header>
@@ -808,7 +843,7 @@ export default function App() {
             }}
             className="text-amber-200/70 hover:text-amber-50 text-xs whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Đóng
+            {t.banner.close}
           </button>
         </div>
       )}
@@ -826,7 +861,7 @@ export default function App() {
                     className="text-sm font-semibold text-amber-50 flex items-center gap-2"
                   >
                     <FileText className="w-4 h-4 text-amber-400" />
-                    <span>Trình Soạn Kịch Bản Thủ Công (.script.txt)</span>
+                    <span>{t.editor.sectionTitle}</span>
                   </label>
                   <span className="text-[11px] font-mono text-amber-300/80">
                     {scriptPathLabel}
@@ -839,13 +874,15 @@ export default function App() {
                     htmlFor="project-select"
                     className="block text-xs font-medium text-amber-200/70 mb-1"
                   >
-                    Mở kịch bản mẫu hoặc dự án trong projects/&lt;slug&gt;/script.txt
+                    {t.editor.projectSelectLabel}
                   </label>
                   <select
                     id="project-select"
                     data-testid="project-selector"
                     value={
-                      projectsList.some((p) => p.path === scriptPathLabel) ? scriptPathLabel : ''
+                      projectsList.some((p) => p.path === scriptPathLabel)
+                        ? scriptPathLabel
+                        : projectsList[0]?.path ?? ''
                     }
                     onChange={(e) => {
                       const chosen = projectsList.find((p) => p.path === e.target.value);
@@ -858,7 +895,7 @@ export default function App() {
                     className="w-full rounded-lg bg-[#120907] border border-[#3d2119] px-3 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-400"
                   >
                     {projectsList.map((p) => (
-                      <option key={p.id} value={p.path}>
+                      <option key={p.path} value={p.path}>
                         {p.title} ({p.path})
                       </option>
                     ))}
@@ -889,7 +926,7 @@ export default function App() {
                     className="px-2.5 py-1.5 rounded bg-[#2a1510] hover:bg-[#381d16] text-amber-100 text-xs flex items-center gap-1 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5 text-amber-400" />
-                    <span>+ Cảnh Mới</span>
+                    <span>{t.editor.addSceneBtn}</span>
                   </button>
                   <button
                     type="button"
@@ -902,7 +939,7 @@ export default function App() {
                     className="px-2.5 py-1.5 rounded bg-[#2a1510] hover:bg-[#381d16] text-amber-100 text-xs flex items-center gap-1 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5 text-amber-400" />
-                    <span>+ Lời Thoại</span>
+                    <span>{t.editor.addLineBtn}</span>
                   </button>
                   <button
                     type="button"
@@ -910,7 +947,7 @@ export default function App() {
                     className="px-2.5 py-1.5 rounded bg-[#2a1510] hover:bg-[#381d16] text-amber-100 text-xs flex items-center gap-1 cursor-pointer ml-auto"
                   >
                     <Save className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Lưu projects/</span>
+                    <span>{t.editor.saveProjectBtn}</span>
                   </button>
                 </div>
 
@@ -921,7 +958,7 @@ export default function App() {
                       htmlFor="palette-select"
                       className="block text-xs font-medium text-amber-200/70 mb-1"
                     >
-                      Bảng Màu Sơn Mài
+                      {t.editor.paletteLabel}
                     </label>
                     <select
                       id="palette-select"
@@ -942,7 +979,7 @@ export default function App() {
                       htmlFor="skill-select"
                       className="block text-xs font-medium text-amber-200/70 mb-1"
                     >
-                      Skill Render Params
+                      {t.editor.skillLabel}
                     </label>
                     <select
                       id="skill-select"
@@ -951,7 +988,7 @@ export default function App() {
                       onChange={(e) => handleSkillChange(e.target.value)}
                       className="w-full rounded-lg bg-[#120907] border border-[#3d2119] px-2.5 py-2 text-xs text-amber-100 focus:outline-none focus:border-amber-400"
                     >
-                      <option value="">Mặc định (Chuẩn)</option>
+                      <option value="">{t.editor.defaultSkillOption}</option>
                       {availableSkills.map((sk) => (
                         <option key={sk.name} value={sk.name}>
                           {sk.name}
@@ -969,18 +1006,14 @@ export default function App() {
                   className="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>
-                    {isParsingScript
-                      ? 'Đang kiểm tra cú pháp & tổng hợp TTS...'
-                      : 'Kiểm Tra Cú Pháp & Dựng Timeline'}
-                  </span>
+                  <span>{isParsingScript ? t.editor.compilingBtn : t.editor.compileBtn}</span>
                 </button>
 
                 {/* Unboxed Metadata Summary */}
                 <div className="pt-2 border-t border-[#3d2119] text-xs text-amber-200/70 flex flex-wrap items-center gap-1.5 tabular-nums">
-                  <span>{timeline.scenes.length} Cảnh</span>
+                  <span>{t.editor.scenesCount(timeline.scenes.length)}</span>
                   <span aria-hidden="true">·</span>
-                  <span>{totalSpokenWords} Từ</span>
+                  <span>{t.editor.wordsCount(totalSpokenWords)}</span>
                   <span aria-hidden="true">·</span>
                   <span>
                     {timeline.totalDurationSec}s ({timeline.totalFrames}f @ 30fps)
@@ -996,10 +1029,10 @@ export default function App() {
               <div className="border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-amber-50">
-                    Danh Sách Cảnh Trong Kịch Bản ({timeline.scenes.length})
+                    {t.editor.sceneBreakdownTitle(timeline.scenes.length)}
                   </h2>
                   <span className="text-xs text-amber-200/70 tabular-nums">
-                    Tổng {timeline.totalDurationSec}s
+                    {t.editor.totalDuration(timeline.totalDurationSec)}
                   </span>
                 </div>
 
@@ -1026,7 +1059,8 @@ export default function App() {
                             0{idx + 1}. {scene.label}
                           </span>
                           <span className="text-amber-200/70 tabular-nums">
-                            {scene.durationSec}s · {scene.background} · {scene.characters.length} nhân vật
+                            {scene.durationSec}s · {scene.background} ·{' '}
+                            {t.editor.charactersInSceneCount(scene.characters.length)}
                           </span>
                         </div>
                         <p className="text-xs text-amber-100/85 line-clamp-2 leading-relaxed">
@@ -1046,8 +1080,8 @@ export default function App() {
                 <div className="w-full flex items-center justify-between mb-3 text-xs text-amber-200/70">
                   <span className="font-medium text-amber-100">
                     {thumbnailPreviewMode
-                      ? `Ảnh Bìa (${activePreset.width}×${activePreset.height})`
-                      : `Sân Khấu (${previewAspect}): ${activeScene.label}`}
+                      ? t.stage.thumbnailPreviewTitle(activePreset.width, activePreset.height)
+                      : t.stage.stageTitle(previewAspect, activeScene.label)}
                   </span>
                   <div className="flex items-center gap-2">
                     <button
@@ -1060,7 +1094,7 @@ export default function App() {
                       }`}
                     >
                       <Eye className="w-3.5 h-3.5 inline mr-1" />
-                      Vùng An Toàn
+                      {t.stage.safeZonesBtn}
                     </button>
                     <button
                       type="button"
@@ -1072,7 +1106,7 @@ export default function App() {
                       }`}
                     >
                       <ImageIcon className="w-3.5 h-3.5 inline mr-1" />
-                      Xem Ảnh Bìa
+                      {t.stage.thumbnailModeBtn}
                     </button>
                   </div>
                 </div>
@@ -1100,7 +1134,7 @@ export default function App() {
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      aria-label={isPlaying ? 'Tạm dừng xem trước' : 'Phát xem trước'}
+                      aria-label={isPlaying ? t.stage.pauseAria : t.stage.playAria}
                       onClick={() => {
                         setThumbnailPreviewMode(false);
                         setIsPlaying((p) => !p);
@@ -1115,7 +1149,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label="Phát lại từ khung hình 0"
+                      aria-label={t.stage.restartAria}
                       onClick={() => {
                         setThumbnailPreviewMode(false);
                         setCurrentFrame(0);
@@ -1126,7 +1160,7 @@ export default function App() {
                     </button>
                     <input
                       type="range"
-                      aria-label="Thanh tua khung hình timeline"
+                      aria-label={t.stage.scrubberAria}
                       min={0}
                       max={Math.max(1, timeline.totalFrames - 1)}
                       value={currentFrame}
@@ -1140,9 +1174,7 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center justify-between text-xs text-amber-200/70 tabular-nums">
-                    <span>
-                      Khung hình {currentFrame} / {timeline.totalFrames}
-                    </span>
+                    <span>{t.stage.frameCounter(currentFrame, timeline.totalFrames)}</span>
                     <span>
                       {(currentFrame / timeline.fps).toFixed(2)}s / {timeline.totalDurationSec}s
                     </span>
@@ -1155,16 +1187,16 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-semibold text-amber-50 flex items-center gap-1.5">
                     <Mic className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Thử Giọng Đọc VoiceStudio (npm run say)</span>
+                    <span>{t.audition.title}</span>
                   </h3>
                   <span className="text-[11px] text-amber-200/70">
-                    line &gt; char &gt; script &gt; env
+                    {t.audition.precedenceHint}
                   </span>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   <input
                     type="text"
-                    aria-label="Câu thoại thử giọng"
+                    aria-label={t.audition.textInputAria}
                     value={auditionText}
                     onChange={(e) => setAuditionText(e.target.value)}
                     className="col-span-2 rounded bg-[#120907] border border-[#3d2119] px-2.5 py-1.5 text-xs text-amber-50"
@@ -1172,7 +1204,7 @@ export default function App() {
                   <input
                     type="text"
                     list="voicestudio-voice-list"
-                    aria-label="Tên giọng đọc VoiceStudio"
+                    aria-label={t.audition.voiceInputAria}
                     value={auditionVoice}
                     onChange={(e) => setAuditionVoice(e.target.value)}
                     placeholder="Voice A"
@@ -1193,7 +1225,7 @@ export default function App() {
                     disabled={isAuditioning}
                     className="px-3 py-1.5 bg-[#2a1510] hover:bg-[#381d16] text-amber-100 text-xs font-medium rounded-lg cursor-pointer whitespace-nowrap"
                   >
-                    {isAuditioning ? 'Đang tổng hợp...' : 'Nghe Thử Giọng (Say)'}
+                    {isAuditioning ? t.audition.synthesizingBtn : t.audition.sayBtn}
                   </button>
                   {auditionAudioUrl && (
                     <audio
@@ -1213,10 +1245,10 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-amber-50 flex items-center gap-2">
                     <Sliders className="w-4 h-4 text-amber-400" />
-                    <span>Chỉnh Sửa Cảnh: {activeScene.label}</span>
+                    <span>{t.inspector.sceneTitle(activeScene.label)}</span>
                   </h2>
                   <span className="text-xs text-amber-200/70 tabular-nums">
-                    Khung {activeScene.startFrame}–{activeScene.endFrame}
+                    {t.inspector.frameRange(activeScene.startFrame, activeScene.endFrame)}
                   </span>
                 </div>
 
@@ -1226,7 +1258,7 @@ export default function App() {
                       htmlFor="scene-bg-select"
                       className="block text-xs text-amber-200/70 mb-1"
                     >
-                      Bối Cảnh SVG
+                      {t.inspector.backgroundLabel}
                     </label>
                     <select
                       id="scene-bg-select"
@@ -1252,7 +1284,7 @@ export default function App() {
                       htmlFor="scene-trans-select"
                       className="block text-xs text-amber-200/70 mb-1"
                     >
-                      Hiệu Ứng Chuyển Cảnh
+                      {t.inspector.transitionLabel}
                     </label>
                     <select
                       id="scene-trans-select"
@@ -1279,7 +1311,7 @@ export default function App() {
                     htmlFor="scene-caption-input"
                     className="block text-xs text-amber-200/70 mb-1"
                   >
-                    Lời Thoại &amp; Phụ Đề Tô Sáng Từng Từ (Fredoka OFL)
+                    {t.inspector.captionLabel}
                   </label>
                   <textarea
                     id="scene-caption-input"
@@ -1301,7 +1333,7 @@ export default function App() {
                 {/* Character Controls with Registry Type (blob / robot) & Voice */}
                 <div className="space-y-3 pt-2 border-t border-[#3d2119]">
                   <div className="text-xs font-semibold text-amber-100">
-                    Nhân Vật Trong Cảnh ({activeScene.characters.length})
+                    {t.inspector.charactersHeader(activeScene.characters.length)}
                   </div>
                   {activeScene.characters.map((char, cIdx) => (
                     <div
@@ -1314,7 +1346,7 @@ export default function App() {
                         </span>
                         <div className="flex items-center gap-2">
                           <select
-                            aria-label={`Kiểu nhân vật của ${char.name}`}
+                            aria-label={t.inspector.characterTypeAria(char.name)}
                             value={char.type || 'blob'}
                             onChange={(e) =>
                               updateActiveScene((s) => ({
@@ -1334,7 +1366,7 @@ export default function App() {
                           </select>
                           <input
                             type="color"
-                            aria-label={`Màu của nhân vật ${char.name}`}
+                            aria-label={t.inspector.characterColorAria(char.name)}
                             value={char.color}
                             onChange={(e) =>
                               updateActiveScene((s) => ({
@@ -1355,7 +1387,7 @@ export default function App() {
                             htmlFor={`emotion-${char.id}`}
                             className="block text-[11px] text-amber-200/70 mb-0.5"
                           >
-                            Cảm xúc
+                            {t.inspector.emotionLabel}
                           </label>
                           <select
                             id={`emotion-${char.id}`}
@@ -1383,7 +1415,7 @@ export default function App() {
                             htmlFor={`accessory-${char.id}`}
                             className="block text-[11px] text-amber-200/70 mb-0.5"
                           >
-                            Phụ kiện
+                            {t.inspector.accessoryLabel}
                           </label>
                           <select
                             id={`accessory-${char.id}`}
@@ -1411,7 +1443,7 @@ export default function App() {
                             htmlFor={`anim-${char.id}`}
                             className="block text-[11px] text-amber-200/70 mb-0.5"
                           >
-                            Chuyển động
+                            {t.inspector.animationLabel}
                           </label>
                           <select
                             id={`anim-${char.id}`}
@@ -1441,7 +1473,7 @@ export default function App() {
                             htmlFor={`voice-${char.id}`}
                             className="block text-[11px] text-amber-200/70 mb-0.5"
                           >
-                            Giọng (Voice)
+                            {t.inspector.voiceLabel}
                           </label>
                           <input
                             id={`voice-${char.id}`}
@@ -1469,10 +1501,10 @@ export default function App() {
               <div className="border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-amber-50">
-                    Thành Phẩm Đã Kết Xuất (out/)
+                    {t.deliverables.title}
                   </h2>
                   <span className="text-xs text-amber-200/70">
-                    {serverStatus?.ttsMode || 'MockProvider Sẵn Sàng'}
+                    {serverStatus?.ttsMode || t.deliverables.defaultTtsStatus}
                   </span>
                 </div>
 
@@ -1481,10 +1513,10 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <div className="text-xs text-amber-200/70 mb-1">
-                          Video MP4 (
-                          {renderedMeta?.resolution ||
-                            `${activePreset.width}×${activePreset.height}`}
-                          )
+                          {t.deliverables.videoLabel(
+                            renderedMeta?.resolution ||
+                              `${activePreset.width}×${activePreset.height}`
+                          )}
                         </div>
                         <video
                           key={renderedVideoUrl}
@@ -1496,10 +1528,12 @@ export default function App() {
                       </div>
                       {renderedThumbUrl && (
                         <div>
-                          <div className="text-xs text-amber-200/70 mb-1">Ảnh Bìa PNG</div>
+                          <div className="text-xs text-amber-200/70 mb-1">
+                            {t.deliverables.thumbnailLabel}
+                          </div>
                           <img
                             src={renderedThumbUrl}
-                            alt="Ảnh bìa đã kết xuất"
+                            alt={t.deliverables.thumbnailAlt}
                             referrerPolicy="no-referrer"
                             className="w-full object-contain rounded-lg border border-[#3d2119] bg-[#120907]"
                           />
@@ -1510,7 +1544,7 @@ export default function App() {
                     {renderedAllRatios.length > 0 && (
                       <div className="pt-2 border-t border-[#3d2119] space-y-1.5">
                         <div className="text-xs font-semibold text-amber-400">
-                          Đã xuất đủ 4 tỷ lệ khung hình:
+                          {t.deliverables.allRatiosHeader}
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           {renderedAllRatios.map((r) => (
@@ -1547,7 +1581,7 @@ export default function App() {
                         className="flex-1 py-2 px-3 bg-[#2a1510] hover:bg-[#381d16] text-amber-50 text-xs font-medium rounded-lg text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>Tải Video MP4</span>
+                        <span>{t.deliverables.downloadVideoBtn}</span>
                       </a>
                       {renderedThumbUrl && (
                         <a
@@ -1556,24 +1590,23 @@ export default function App() {
                           className="flex-1 py-2 px-3 bg-[#2a1510] hover:bg-[#381d16] text-amber-50 text-xs font-medium rounded-lg text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
                         >
                           <Download className="w-3.5 h-3.5" />
-                          <span>Tải Ảnh Bìa PNG</span>
+                          <span>{t.deliverables.downloadThumbnailBtn}</span>
                         </a>
                       )}
                     </div>
                   </div>
                 ) : (
                   <div className="p-6 rounded-lg bg-[#120907]/80 border border-[#3d2119] text-center space-y-3">
-                    <p className="text-xs text-amber-200/70">
-                      Chọn tỷ lệ khung hình (`9:16`, `16:9`, `4:3`, `3:4`, hoặc `Tất cả`) và nhấn
-                      &ldquo;Xuất Video MP4 &amp; Ảnh Bìa&rdquo; để ghép âm thanh và xuất thành phẩm.
-                    </p>
+                    <p className="text-xs text-amber-200/70">{t.deliverables.emptyStatePrompt}</p>
                     <button
                       type="button"
                       onClick={() => handleRenderMp4(false)}
                       disabled={isRenderingVideo}
                       className="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-[#1a0b08] font-semibold text-xs rounded-lg transition-colors cursor-pointer"
                     >
-                      {isRenderingVideo ? 'Đang kết xuất...' : 'Kết Xuất Timeline Hiện Tại'}
+                      {isRenderingVideo
+                        ? t.deliverables.renderingNowBtn
+                        : t.deliverables.renderCurrentTimelineBtn}
                     </button>
                   </div>
                 )}
@@ -1588,11 +1621,12 @@ export default function App() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#3d2119] pb-5">
               <div>
                 <h1 className="text-2xl font-bold text-amber-50 font-display">
-                  Kho Nhân Vật Đăng Ký Qua defineCharacter (Blob &amp; Robot) &amp; Đạo Cụ SVG
+                  {t.gallery.title}
                 </h1>
                 <p className="text-sm text-amber-200/70 mt-1">
-                  Mọi nhân vật trong <code className="font-mono text-amber-300">src/characters/*.tsx</code>{' '}
-                  được tự động đăng ký với điểm neo (anchors: feet, head, bubble) cho mọi tỷ lệ khung hình.
+                  {t.gallery.subtitlePrefix}{' '}
+                  <code className="font-mono text-amber-300">src/characters/*.tsx</code>{' '}
+                  {t.gallery.subtitleSuffix}
                 </p>
               </div>
               <button
@@ -1604,8 +1638,8 @@ export default function App() {
                 <Film className="w-4 h-4" />
                 <span>
                   {isRenderingVideo
-                    ? 'Đang xuất video bộ sưu tập...'
-                    : 'Xuất Video Trình Diễn Bộ Sưu Tập'}
+                    ? t.gallery.renderingGalleryBtn
+                    : t.gallery.renderGalleryBtn}
                 </span>
               </button>
             </div>
@@ -1613,7 +1647,7 @@ export default function App() {
             {/* Section 1: Classic Squishy Blob ('blob') */}
             <section className="space-y-3">
               <h2 className="text-base font-semibold text-amber-50">
-                01. Nhân Vật `blob` (Classic Squishy Blob — `src/characters/Blob.tsx`)
+                {t.gallery.blobSectionTitle}
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-3">
                 {EmotionSchema.options.map((emotion, idx) => {
@@ -1656,7 +1690,7 @@ export default function App() {
             {/* Section 2: BoxBot 3000 ('robot') */}
             <section className="space-y-3">
               <h2 className="text-base font-semibold text-amber-50">
-                02. Nhân Vật `robot` (BoxBot 3000 Square Robot — `src/characters/Robot.tsx`)
+                {t.gallery.robotSectionTitle}
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-3">
                 {EmotionSchema.options.map((emotion, idx) => {
@@ -1700,7 +1734,7 @@ export default function App() {
             {/* Section 3: 8 Extensible Props Grid */}
             <section className="space-y-3">
               <h2 className="text-base font-semibold text-amber-50">
-                03. Kho Đạo Cụ Mở Rộng (`defineProp` — 8 Đạo Cụ SVG Động)
+                {t.gallery.propSectionTitle}
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
                 {PropTypeSchema.options.map((propType) => (
@@ -1730,7 +1764,7 @@ export default function App() {
             {/* Section 4: 6 SVG Stage Backgrounds */}
             <section className="space-y-3">
               <h2 className="text-base font-semibold text-amber-50">
-                04. Sáu Bối Cảnh Sân Khấu Đa Tỷ Lệ ({previewAspect})
+                {t.gallery.bgSectionTitle(previewAspect)}
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                 {BackgroundTypeSchema.options.map((bgType, idx) => {
@@ -1769,14 +1803,14 @@ export default function App() {
             <div className="lg:col-span-5 border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-4">
               <h1 className="text-lg font-bold text-amber-50 font-display flex items-center gap-2">
                 <Layers className="w-5 h-5 text-amber-400" />
-                <span>Kết Xuất Hàng Loạt Từ Tệp Kịch Bản (.script.txt / .script.json)</span>
+                <span>{t.batch.title}</span>
               </h1>
               <p className="text-xs text-amber-200/70 leading-relaxed">
-                Nhập danh sách đường dẫn tệp kịch bản (mỗi dòng 1 tệp) hoặc chạy{' '}
+                {t.batch.descriptionPrefix}{' '}
                 <code className="text-amber-300 font-mono">
                   npm run batch -- examples
                 </code>
-                . Mỗi kịch bản được gán một biến thể bảng màu riêng biệt.
+                {t.batch.descriptionSuffix}
               </p>
 
               <div>
@@ -1784,7 +1818,7 @@ export default function App() {
                   htmlFor="batch-paths-textarea"
                   className="block text-xs font-medium text-amber-100 mb-1.5"
                 >
-                  Danh Sách Đường Dẫn Kịch Bản (Mỗi dòng 1 tệp)
+                  {t.batch.pathsLabel}
                 </label>
                 <textarea
                   id="batch-paths-textarea"
@@ -1801,16 +1835,14 @@ export default function App() {
                 disabled={isRunningBatch}
                 className="w-full py-2.5 px-4 bg-amber-400 hover:bg-amber-300 text-[#1a0b08] font-semibold text-xs rounded-lg transition-colors cursor-pointer"
               >
-                {isRunningBatch
-                  ? 'Đang dựng timeline hàng loạt...'
-                  : 'Dựng Timeline Hàng Loạt Từ Danh Sách Kịch Bản'}
+                {isRunningBatch ? t.batch.runningBtn : t.batch.runBtn}
               </button>
             </div>
 
             <div className="lg:col-span-7 border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-amber-50">
-                  Kết Quả Lô Kịch Bản ({batchResults.length || PALETTE_VARIATIONS.length} Bảng Màu)
+                  {t.batch.resultsHeader(batchResults.length || PALETTE_VARIATIONS.length)}
                 </h2>
                 <span className="text-xs text-amber-200/70 font-mono">
                   npm run batch -- examples --mock-tts
@@ -1830,7 +1862,7 @@ export default function App() {
                         </div>
                         <div className="text-sm font-semibold text-amber-50">{item.topic}</div>
                         <div className="text-xs text-amber-200/70 tabular-nums">
-                          {item.sceneCount} cảnh · {item.durationSec}s · {item.totalFrames} frames
+                          {t.batch.itemStats(item.sceneCount, item.durationSec, item.totalFrames)}
                         </div>
                       </div>
 
@@ -1844,7 +1876,7 @@ export default function App() {
                         }}
                         className="px-3.5 py-2 bg-[#2a1510] hover:bg-[#381d16] text-amber-50 text-xs font-medium rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
                       >
-                        Mở Trong Sân Khấu
+                        {t.batch.openInStageBtn}
                       </button>
                     </div>
                   ))}
@@ -1887,14 +1919,12 @@ export default function App() {
             <div className="lg:col-span-6 border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-4">
               <h1 className="text-lg font-bold text-amber-50 font-display flex items-center gap-2">
                 <Terminal className="w-5 h-5 text-amber-400" />
-                <span>Lệnh CLI Thủ Công (Script In → Video Out)</span>
+                <span>{t.cli.title}</span>
               </h1>
 
               <div className="space-y-3 text-xs">
                 <div className="p-3.5 rounded-lg bg-[#120907] border border-[#3d2119] space-y-1">
-                  <div className="font-semibold text-amber-400">
-                    1. Tạo Dự Án Mới &amp; Kiểm Tra Cú Pháp Kịch Bản
-                  </div>
+                  <div className="font-semibold text-amber-400">{t.cli.step1Title}</div>
                   <code className="block font-mono text-amber-100">
                     npm run new -- &quot;What if Mom played on your Roblox account?&quot;
                   </code>
@@ -1904,9 +1934,7 @@ export default function App() {
                 </div>
 
                 <div className="p-3.5 rounded-lg bg-[#120907] border border-[#3d2119] space-y-1">
-                  <div className="font-semibold text-amber-400">
-                    2. Kết Xuất Kịch Bản Ra MP4 + Ảnh Bìa + Meta JSON
-                  </div>
+                  <div className="font-semibold text-amber-400">{t.cli.step2Title}</div>
                   <code className="block font-mono text-amber-100">
                     npm run make -- examples/demo.script.txt --aspect {selectedAspect} --mock-tts
                   </code>
@@ -1916,9 +1944,7 @@ export default function App() {
                 </div>
 
                 <div className="p-3.5 rounded-lg bg-[#120907] border border-[#3d2119] space-y-1">
-                  <div className="font-semibold text-amber-400">
-                    3. Danh Sách Giọng Đọc &amp; Nghe Thử VoiceStudio
-                  </div>
+                  <div className="font-semibold text-amber-400">{t.cli.step3Title}</div>
                   <code className="block font-mono text-amber-100">npm run voices</code>
                   <code className="block font-mono text-amber-100">
                     npm run say -- &quot;Hand it over, my turn!&quot; --voice &quot;Voice B&quot; --mock-tts
@@ -1930,10 +1956,14 @@ export default function App() {
             <div className="lg:col-span-6 border border-[#3d2119] bg-[#1d100c]/90 rounded-xl p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-amber-50">
-                  Live Timeline JSON ({timeline.aspect})
+                  {t.cli.liveTimelineTitle(timeline.aspect)}
                 </h2>
                 <span className="text-xs text-amber-200/70 font-mono">
-                  {timeline.scenes.length} cảnh · {timeline.totalFrames} frames · seed {timeline.seed}
+                  {t.cli.liveTimelineMeta(
+                    timeline.scenes.length,
+                    timeline.totalFrames,
+                    timeline.seed
+                  )}
                 </span>
               </div>
               <pre className="p-4 rounded-lg bg-[#120907] border border-[#3d2119] text-[11px] text-amber-100/90 font-mono overflow-auto max-h-[460px]">

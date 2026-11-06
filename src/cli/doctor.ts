@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveRemotionBrowserExecutable } from '../render/remotionBrowser';
 import { checkVoiceStudioHealth } from '../voice/provider';
 
 export interface DoctorCheckResult {
@@ -35,16 +36,27 @@ export async function runDoctorChecks(): Promise<{
     required: true,
   });
 
-  // 2. ffmpeg
+  // 2. Chromium for Remotion (@remotion/renderer)
+  const browserExec = resolveRemotionBrowserExecutable();
+  checks.push({
+    name: 'Chromium for Remotion (@remotion/renderer)',
+    ok: Boolean(browserExec),
+    detail: browserExec
+      ? `Found (${browserExec})`
+      : 'No local Chromium/chrome-headless-shell found (set REMOTION_CHROME_EXECUTABLE or run npx remotion browser ensure)',
+    required: true,
+  });
+
+  // 3. Standard ffmpeg (H.264 + AAC muxing; no librsvg needed)
   const ffmpeg = checkBinary('ffmpeg');
   checks.push({
-    name: 'ffmpeg binary',
+    name: 'Standard ffmpeg binary (H.264 + AAC; no librsvg required)',
     ok: ffmpeg.ok,
     detail: ffmpeg.version,
     required: true,
   });
 
-  // 3. ffprobe
+  // 4. ffprobe
   const ffprobe = checkBinary('ffprobe');
   checks.push({
     name: 'ffprobe binary',
@@ -53,19 +65,7 @@ export async function runDoctorChecks(): Promise<{
     required: true,
   });
 
-  // 4. VoiceStudio /health
-  const vsUrl = process.env.VOICESTUDIO_URL || 'http://127.0.0.1:3900';
-  const vsHealth = await checkVoiceStudioHealth(vsUrl);
-  checks.push({
-    name: `VoiceStudio TTS (${vsUrl}/health)`,
-    ok: vsHealth.ok,
-    detail: vsHealth.ok
-      ? `Online (${vsHealth.detail})`
-      : `${vsHealth.detail} — CLI/UI will use MockProvider when --mock-tts is passed or offline`,
-    required: false,
-  });
-
-  // 5.Bundled OFL Font & Schema files
+  // 5. Bundled OFL Font
   const fontOk = fs.existsSync(path.resolve(process.cwd(), 'assets/fonts/Fredoka-Bold.ttf'));
   checks.push({
     name: 'Bundled OFL font (assets/fonts/Fredoka-Bold.ttf)',
@@ -74,19 +74,31 @@ export async function runDoctorChecks(): Promise<{
     required: true,
   });
 
+  // 6. Optional Local VoiceStudio /health
+  const vsUrl = process.env.VOICESTUDIO_URL || 'http://127.0.0.1:3900';
+  const vsHealth = await checkVoiceStudioHealth(vsUrl);
+  checks.push({
+    name: `VoiceStudio TTS (${vsUrl}/health — optional)`,
+    ok: vsHealth.ok,
+    detail: vsHealth.ok
+      ? `Online (${vsHealth.detail})`
+      : `Offline — using built-in procedural MockProvider seamlessly`,
+    required: false,
+  });
+
   const allRequiredOk = checks.filter((c) => c.required).every((c) => c.ok);
   return { allRequiredOk, checks };
 }
 
 export async function printDoctorReport(): Promise<boolean> {
   const { allRequiredOk, checks } = await runDoctorChecks();
-  console.log('\n=== BlobToon Environment Doctor ===\n');
+  console.log('\n=== BlobToon Studio Environment Doctor ===\n');
   for (const c of checks) {
-    const badge = c.ok ? '[PASS]' : c.required ? '[FAIL]' : '[WARN]';
+    const badge = c.ok ? '[PASS]' : c.required ? '[FAIL]' : '[INFO]';
     console.log(`${badge} ${c.name}: ${c.detail}`);
   }
   console.log(
-    `\nOverall Status: ${allRequiredOk ? 'READY (All required dependencies available)' : 'ISSUES FOUND'}\n`
+    `\nOverall Status: ${allRequiredOk ? 'READY (Remotion + standard ffmpeg verified)' : 'ISSUES FOUND'}\n`
   );
   return allRequiredOk;
 }

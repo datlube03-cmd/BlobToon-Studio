@@ -5,6 +5,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import React from 'react';
 import ReactDOMServer from 'react-dom/server';
+import { bundle } from '@remotion/bundler';
+import { renderMedia, renderStill, selectComposition } from '@remotion/renderer';
 import {
   ALL_ASPECT_RATIOS,
   AspectRatio,
@@ -22,8 +24,24 @@ import { Timeline, VideoMeta } from '../timeline/schema';
 import { applyAspectToTimeline, buildVideoMeta } from '../timeline/builder';
 import { SceneStage } from '../scenes/SceneStage';
 import { MockProvider, probeAudioDurationSec } from '../voice/provider';
+import { resolveRemotionBrowserExecutable } from './remotionBrowser';
 
 const execFileAsync = promisify(execFile);
+
+let cachedRemotionBundlePromise: Promise<string> | null = null;
+
+export async function getRemotionBundleUrl(): Promise<string> {
+  if (!cachedRemotionBundlePromise) {
+    const entryPoint = path.resolve(process.cwd(), 'src/render/index.ts');
+    cachedRemotionBundlePromise = bundle({
+      entryPoint,
+    }).catch((err) => {
+      cachedRemotionBundlePromise = null;
+      throw err;
+    });
+  }
+  return cachedRemotionBundlePromise;
+}
 
 export interface RenderOptions {
   outDir: string;
@@ -40,6 +58,8 @@ export interface RenderOptions {
   maxDurationSec?: number;
   voiceProviderName?: string;
   copyAudioToSubdir?: boolean;
+  draft?: boolean;
+  quality?: 'final' | 'draft';
   onProgress?: (percent: number, stage: string) => void;
 }
 
@@ -57,6 +77,7 @@ export interface RenderOutputResult {
   width: number;
   height: number;
   fps: number;
+  renderEngine?: 'remotion' | 'draft-svg';
   meta: VideoMeta;
 }
 
@@ -396,106 +417,230 @@ export async function renderTimelineToVideo(
     options.copyAudioToSubdir !== false ? path.join(outDir, 'audio') : undefined;
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blobtoon-render-'));
+  const isDraftMode = options.draft === true || options.quality === 'draft';
 
   try {
-    options.onProgress?.(5, `Generating thumbnail PNG (${targetAspect})`);
-    const thumbSvgPath = path.join(tempDir, 'thumbnail.svg');
-    fs.writeFileSync(thumbSvgPath, renderFrameSvgMarkup(timeline, 0, true, targetAspect), 'utf-8');
+    const totalFrames = options.maxDurationSec
+      ? Math.min(timeline.totalFrames, Math.max(1, Math.round(options.maxDurationSec * timeline.fps)))
+      : timeline.totalFrames;
+    const targetDurSec = Number((totalFrames / timeline.fps).toFixed(4));
 
-    // For 16:9, export a 1280x720 thumbnail.png (plus full 1920x1080 thumbnail_16x9.png if custom)
-    const thumbW = preset.extraThumbnailSize ? preset.extraThumbnailSize.width : timeline.width;
-    const thumbH = preset.extraThumbnailSize ? preset.extraThumbnailSize.height : timeline.height;
-
-    await execFileAsync('ffmpeg', [
-      '-y',
-      '-i',
-      thumbSvgPath,
-      '-vf',
-      `scale=${thumbW}:${thumbH}`,
-      '-frames:v',
-      '1',
-      thumbnailPath,
-    ]);
+    const renderTimeline: Timeline = {
+      ...timeline,
+      totalFrames,
+      totalDurationSec: Number((totalFrames / timeline.fps).toFixed(3)),
+    };
 
     let extraThumbnailPath: string | undefined;
-    if (preset.extraThumbnailSize) {
-      extraThumbnailPath = path.join(outDir, 'thumbnail_1920x1080.png');
+
+    if (!isDraftMode) {
+      // PRIMARY FINAL RENDERER: Remotion (@remotion/bundler + @remotion/renderer renderStill & renderMedia)
+      // Uses local Chromium/chrome-headless-shell and standard ffmpeg (no librsvg required).
+      const browserExecutable = resolveRemotionBrowserExecutable() ?? undefined;
+      options.onProgress?.(5, `Bundling Remotion composition (${targetAspect})`);
+      const serveUrl = await getRemotionBundleUrl();
+
+      const thumbInputProps = {
+        aspect: targetAspect,
+        timeline: renderTimeline,
+        sfx: renderTimeline.audio?.sfx ?? true,
+        sfxVolume: renderTimeline.audio?.sfxVolume ?? 0.35,
+        showSafeZones: false,
+        thumbnailMode: true,
+      };
+
+      const thumbComp = await selectComposition({
+        serveUrl,
+        id: 'BlobToonShort',
+        inputProps: thumbInputProps,
+        browserExecutable,
+      });
+
+      options.onProgress?.(15, `Rendering thumbnail PNG via Remotion (${targetAspect})`);
+      const fullThumbPng = path.join(tempDir, 'remotion_thumb_full.png');
+      await renderStill({
+        composition: thumbComp,
+        serveUrl,
+        output: fullThumbPng,
+        frame: 0,
+        inputProps: thumbInputProps,
+        browserExecutable,
+      });
+
+      if (preset.extraThumbnailSize) {
+        extraThumbnailPath = path.join(outDir, 'thumbnail_1920x1080.png');
+        fs.copyFileSync(fullThumbPng, extraThumbnailPath);
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-i',
+          fullThumbPng,
+          '-vf',
+          `scale=${preset.extraThumbnailSize.width}:${preset.extraThumbnailSize.height}`,
+          '-frames:v',
+          '1',
+          thumbnailPath,
+        ]);
+      } else {
+        fs.copyFileSync(fullThumbPng, thumbnailPath);
+      }
+
+      const videoInputProps = {
+        aspect: targetAspect,
+        timeline: renderTimeline,
+        sfx: renderTimeline.audio?.sfx ?? true,
+        sfxVolume: renderTimeline.audio?.sfxVolume ?? 0.35,
+        showSafeZones: false,
+        thumbnailMode: false,
+      };
+
+      const videoComp = await selectComposition({
+        serveUrl,
+        id: 'BlobToonShort',
+        inputProps: videoInputProps,
+        browserExecutable,
+      });
+
+      options.onProgress?.(
+        30,
+        `Rendering ${totalFrames} frames via Remotion renderMedia (${timeline.width}x${timeline.height}, ${targetAspect})`
+      );
+      const remotionRawMp4 = path.join(tempDir, 'remotion_video_raw.mp4');
+      await renderMedia({
+        composition: {
+          ...videoComp,
+          durationInFrames: totalFrames,
+          width: timeline.width,
+          height: timeline.height,
+          fps: timeline.fps,
+        },
+        serveUrl,
+        codec: 'h264',
+        outputLocation: remotionRawMp4,
+        inputProps: videoInputProps,
+        browserExecutable,
+      });
+
+      options.onProgress?.(75, 'Building master voiceover + SFX audio track');
+      const masterWavPath = await buildMasterTimelineAudioWav(
+        timeline,
+        tempDir,
+        totalFrames,
+        audioDir
+      );
+
+      options.onProgress?.(90, 'Muxing Remotion H.264 video with master audio via standard ffmpeg');
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-i',
+        remotionRawMp4,
+        '-i',
+        masterWavPath,
+        '-af',
+        `apad,atrim=0:${targetDurSec}`,
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-shortest',
+        '-movflags',
+        '+faststart',
+        videoPath,
+      ]);
+    } else {
+      // OPTIONAL FAST DRAFT MODE (--draft / --quality draft): SVG frames + ffmpeg
+      options.onProgress?.(5, `Generating draft thumbnail PNG (${targetAspect})`);
+      const thumbSvgPath = path.join(tempDir, 'thumbnail.svg');
+      fs.writeFileSync(thumbSvgPath, renderFrameSvgMarkup(timeline, 0, true, targetAspect), 'utf-8');
+
+      const thumbW = preset.extraThumbnailSize ? preset.extraThumbnailSize.width : timeline.width;
+      const thumbH = preset.extraThumbnailSize ? preset.extraThumbnailSize.height : timeline.height;
+
       await execFileAsync('ffmpeg', [
         '-y',
         '-i',
         thumbSvgPath,
         '-vf',
-        `scale=${timeline.width}:${timeline.height}`,
+        `scale=${thumbW}:${thumbH}`,
         '-frames:v',
         '1',
-        extraThumbnailPath,
+        thumbnailPath,
+      ]);
+
+      if (preset.extraThumbnailSize) {
+        extraThumbnailPath = path.join(outDir, 'thumbnail_1920x1080.png');
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-i',
+          thumbSvgPath,
+          '-vf',
+          `scale=${timeline.width}:${timeline.height}`,
+          '-frames:v',
+          '1',
+          extraThumbnailPath,
+        ]);
+      }
+
+      const stride = totalFrames > 150 ? 3 : 1;
+      options.onProgress?.(
+        15,
+        `Rendering ${totalFrames} draft SVG frames (${timeline.width}x${timeline.height}, ${targetAspect})`
+      );
+
+      for (let f = 0; f < totalFrames; f += stride) {
+        const svgMarkup = renderFrameSvgMarkup(timeline, f, false, targetAspect);
+        const primaryFrameFile = path.join(tempDir, `frame_${String(f).padStart(5, '0')}.svg`);
+        fs.writeFileSync(primaryFrameFile, svgMarkup, 'utf-8');
+
+        for (let dup = 1; dup < stride && f + dup < totalFrames; dup++) {
+          const dupFile = path.join(tempDir, `frame_${String(f + dup).padStart(5, '0')}.svg`);
+          fs.linkSync(primaryFrameFile, dupFile);
+        }
+      }
+
+      options.onProgress?.(55, 'Building master voiceover audio track');
+      const masterWavPath = await buildMasterTimelineAudioWav(
+        timeline,
+        tempDir,
+        totalFrames,
+        audioDir
+      );
+
+      options.onProgress?.(
+        70,
+        `Encoding ${timeline.width}x${timeline.height} 30fps H.264 MP4 with ffmpeg`
+      );
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-framerate',
+        String(timeline.fps),
+        '-i',
+        path.join(tempDir, 'frame_%05d.svg'),
+        '-i',
+        masterWavPath,
+        '-vf',
+        `scale=${timeline.width}:${timeline.height}:flags=lanczos,format=yuv420p`,
+        '-af',
+        `apad,atrim=0:${targetDurSec}`,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-crf',
+        '21',
+        '-r',
+        String(timeline.fps),
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-shortest',
+        '-movflags',
+        '+faststart',
+        videoPath,
       ]);
     }
-
-    const totalFrames = options.maxDurationSec
-      ? Math.min(timeline.totalFrames, Math.max(1, Math.round(options.maxDurationSec * timeline.fps)))
-      : timeline.totalFrames;
-
-    const stride = totalFrames > 150 ? 3 : 1;
-
-    options.onProgress?.(
-      15,
-      `Rendering ${totalFrames} SVG frames (${timeline.width}x${timeline.height}, ${targetAspect})`
-    );
-
-    for (let f = 0; f < totalFrames; f += stride) {
-      const svgMarkup = renderFrameSvgMarkup(timeline, f, false, targetAspect);
-      const primaryFrameFile = path.join(tempDir, `frame_${String(f).padStart(5, '0')}.svg`);
-      fs.writeFileSync(primaryFrameFile, svgMarkup, 'utf-8');
-
-      for (let dup = 1; dup < stride && f + dup < totalFrames; dup++) {
-        const dupFile = path.join(tempDir, `frame_${String(f + dup).padStart(5, '0')}.svg`);
-        fs.linkSync(primaryFrameFile, dupFile);
-      }
-    }
-
-    options.onProgress?.(55, 'Building master voiceover audio track');
-    const masterWavPath = await buildMasterTimelineAudioWav(
-      timeline,
-      tempDir,
-      totalFrames,
-      audioDir
-    );
-
-    options.onProgress?.(
-      70,
-      `Encoding ${timeline.width}x${timeline.height} 30fps H.264 MP4 with ffmpeg`
-    );
-    const targetDurSec = Number((totalFrames / timeline.fps).toFixed(4));
-    await execFileAsync('ffmpeg', [
-      '-y',
-      '-framerate',
-      String(timeline.fps),
-      '-i',
-      path.join(tempDir, 'frame_%05d.svg'),
-      '-i',
-      masterWavPath,
-      '-vf',
-      `scale=${timeline.width}:${timeline.height}:flags=lanczos,format=yuv420p`,
-      '-af',
-      `apad,atrim=0:${targetDurSec}`,
-      '-c:v',
-      'libx264',
-      '-preset',
-      'ultrafast',
-      '-crf',
-      '21',
-      '-r',
-      String(timeline.fps),
-      '-c:a',
-      'aac',
-      '-b:a',
-      '128k',
-      '-shortest',
-      '-movflags',
-      '+faststart',
-      videoPath,
-    ]);
 
     const actualDurationSec = await probeAudioDurationSec(videoPath);
     const meta = buildVideoMeta(
@@ -526,6 +671,7 @@ export async function renderTimelineToVideo(
       width: timeline.width,
       height: timeline.height,
       fps: timeline.fps,
+      renderEngine: isDraftMode ? 'draft-svg' : 'remotion',
       meta,
     };
   } finally {

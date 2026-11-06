@@ -2,58 +2,16 @@ import childProcess from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  TtsProvider,
+  TtsSynthesisResult,
+  clampTtsSpeed,
+  normalizeSpeechText,
+  resolveLineVoice,
+} from './shared';
 
-export interface TtsSynthesisResult {
-  file: string;
-  durationSec: number;
-  cached: boolean;
-  provider: 'voicestudio' | 'mock';
-  speedAdjusted?: boolean;
-  voiceUsed?: string;
-}
-
-export interface TtsProvider {
-  readonly name: 'voicestudio' | 'mock';
-  synthesize(text: string, voice?: string, speedMultiplier?: number): Promise<TtsSynthesisResult>;
-}
-
-/**
- * Resolves the effective voice for a spoken line using the strict precedence order:
- * `line.voice > character.voice > script.voice (project default) > VOICESTUDIO_VOICE (env) > 'alloy'`
- */
-export function resolveLineVoice(options: {
-  lineVoice?: string;
-  characterVoice?: string;
-  scriptVoice?: string;
-  envVoice?: string;
-}): string {
-  const defaultEnvVoice =
-    typeof process !== 'undefined' && process.env ? process.env.VOICESTUDIO_VOICE : undefined;
-  const candidates = [
-    options.lineVoice,
-    options.characterVoice,
-    options.scriptVoice,
-    options.envVoice ?? defaultEnvVoice,
-    'alloy',
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && c.trim().length > 0) {
-      return c.trim();
-    }
-  }
-  return 'alloy';
-}
-
-export function normalizeSpeechText(text: string): string {
-  return text.trim().replace(/\s+/g, ' ');
-}
-
-export function clampTtsSpeed(speed?: number): number {
-  if (typeof speed !== 'number' || Number.isNaN(speed) || speed <= 0) {
-    return 1.0;
-  }
-  return Number(Math.max(0.5, Math.min(2.5, speed)).toFixed(2));
-}
+export { clampTtsSpeed, normalizeSpeechText, resolveLineVoice };
+export type { TtsProvider, TtsSynthesisResult };
 
 export function computeTtsCacheKey(
   voice: string,
@@ -274,6 +232,24 @@ export class MockProvider implements TtsProvider {
       voiceUsed: chosenVoice,
     };
   }
+
+  async concatenateSceneLines(
+    wavFiles: string[],
+    sceneId: string,
+    speedMultiplier = 1.0
+  ): Promise<{ file: string; durationSec: number }> {
+    const combinedKey = computeTtsCacheKey(
+      `scene:${sceneId}`,
+      wavFiles.join('|'),
+      speedMultiplier
+    );
+    const combinedPath = path.join(this.cacheDir, `scene_${combinedKey}.wav`);
+    const durationSec = await concatenateWavFiles(wavFiles, combinedPath);
+    return {
+      file: combinedPath,
+      durationSec: Number(Math.max(0.5, durationSec).toFixed(3)),
+    };
+  }
 }
 
 export interface VoiceStudioProviderOptions {
@@ -429,18 +405,21 @@ export class VoiceStudioProvider implements TtsProvider {
     }
 
     if (this.fallbackToMock) {
-      if (!VoiceStudioProvider.warnedOfflineForUrl.has(this.baseUrl)) {
-        VoiceStudioProvider.warnedOfflineForUrl.add(this.baseUrl);
-        console.info(
-          `[BlobToon Voice] VoiceStudio at ${this.baseUrl} is offline (${lastError}) — using built-in procedural MockProvider.`
-        );
-      }
+      VoiceStudioProvider.warnedOfflineForUrl.add(this.baseUrl);
       return this.mockFallback.synthesize(text, chosenVoice, speedMultiplier);
     }
 
     throw new Error(
       `VoiceStudio TTS failed at ${endpoint} (${lastError}). Start VoiceStudio on ${this.baseUrl} or pass --mock-tts.`
     );
+  }
+
+  async concatenateSceneLines(
+    wavFiles: string[],
+    sceneId: string,
+    speedMultiplier = 1.0
+  ): Promise<{ file: string; durationSec: number }> {
+    return this.mockFallback.concatenateSceneLines(wavFiles, sceneId, speedMultiplier);
   }
 }
 
@@ -543,7 +522,7 @@ export async function listVoiceStudioVoices(
 
   const guide = health.ok
     ? `VoiceStudio is online at ${cleanUrl}, but does not expose a voice-listing endpoint. Open the VoiceStudio UI at ${cleanUrl} to view or create custom voices, then paste any voice name/ID into your .script.txt header (voice: <Name>) or character definition (voice=<Name>).`
-    : `VoiceStudio is not currently reachable at ${cleanUrl} (${health.detail}). When VoiceStudio is running, open ${cleanUrl} in your browser to create or pick a voice and paste its name/ID into your script (e.g. "kid: blob(color=#4cc9f0, voice=Voice A)"). You can also audition built-in/mock voices right now with: npm run say -- "Hello!" --voice "Voice A"`;
+    : `Using built-in procedural MockProvider voices by default. When VoiceStudio is running on ${cleanUrl}, open ${cleanUrl} in your browser to create or pick a voice and paste its name/ID into your script (e.g. "kid: blob(color=#4cc9f0, voice=Voice A)"). You can also audition voices anytime with: npm run say -- "Hello!" --voice "Voice A"`;
 
   return {
     online: health.ok,

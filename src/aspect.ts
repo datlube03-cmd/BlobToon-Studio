@@ -42,10 +42,10 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     label: 'Shorts / TikTok / Reels (9:16)',
     orientation: 'portrait',
     safeMargin: { top: 0.05, bottom: 0.2, left: 0.05, right: 0.13 },
-    charScaleFactor: 0.92,
+    charScaleFactor: 0.96,
     groundYRatio: 0.58,
     captionTopRatio: 0.135,
-    captionFontScale: 0.042,
+    captionFontScale: 0.041,
     captionMaxWidthRatio: 0.86,
   },
   '16:9': {
@@ -56,11 +56,11 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     label: 'YouTube Landscape (16:9)',
     orientation: 'landscape',
     safeMargin: { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 },
-    charScaleFactor: 0.76,
-    groundYRatio: 0.64,
-    captionTopRatio: 0.165,
-    captionFontScale: 0.039,
-    captionMaxWidthRatio: 0.58,
+    charScaleFactor: 1.04,
+    groundYRatio: 0.65,
+    captionTopRatio: 0.15,
+    captionFontScale: 0.041,
+    captionMaxWidthRatio: 0.68,
     extraThumbnailSize: { width: 1280, height: 720 },
   },
   '4:3': {
@@ -71,11 +71,11 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     label: 'Classic / Facebook (4:3)',
     orientation: 'landscape',
     safeMargin: { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 },
-    charScaleFactor: 0.78,
-    groundYRatio: 0.64,
-    captionTopRatio: 0.165,
-    captionFontScale: 0.039,
-    captionMaxWidthRatio: 0.7,
+    charScaleFactor: 1.0,
+    groundYRatio: 0.65,
+    captionTopRatio: 0.15,
+    captionFontScale: 0.041,
+    captionMaxWidthRatio: 0.74,
   },
   '3:4': {
     ratio: '3:4',
@@ -85,10 +85,10 @@ export const ASPECT_PRESETS: Record<AspectRatio, AspectPreset> = {
     label: 'Portrait Feed (3:4)',
     orientation: 'portrait',
     safeMargin: { top: 0.05, bottom: 0.05, left: 0.05, right: 0.05 },
-    charScaleFactor: 0.86,
+    charScaleFactor: 0.94,
     groundYRatio: 0.6,
     captionTopRatio: 0.145,
-    captionFontScale: 0.04,
+    captionFontScale: 0.041,
     captionMaxWidthRatio: 0.86,
   },
 };
@@ -353,7 +353,7 @@ export function computeStageLayout(
     } else {
       // Spread characters evenly across horizontal span in both landscape and portrait
       const fraction = (idx + 0.5) / count;
-      const spreadPad = preset.orientation === 'landscape' ? usableSpan * 0.06 : 0;
+      const spreadPad = preset.orientation === 'landscape' ? usableSpan * 0.12 : 0;
       charX = Math.round(usableLeft + spreadPad + fraction * (usableSpan - spreadPad * 2));
     }
 

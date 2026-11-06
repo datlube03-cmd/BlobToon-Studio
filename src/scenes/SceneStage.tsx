@@ -2,11 +2,13 @@ import React from 'react';
 import { interpolate } from 'remotion';
 import {
   AspectRatio,
+  BUNDLED_FONT_FAMILY,
   BoundingBox,
   SafeAreaBox,
   StageLayoutMetrics,
   computeBubblePlacement,
   computeStageLayout,
+  wrapWordsByMeasuredWidth,
 } from '../aspect';
 import { getCharacterDefinition, BlobCharacterDef } from '../characters';
 import { Caption, computeCaptionLayout } from '../characters/Caption';
@@ -452,54 +454,79 @@ export const SceneStage: React.FC<SceneStageProps> = ({
 
         {/* 5. Burned-In Word-by-Word Highlighted Caption OR Thumbnail Hook Banner */}
         {thumbnailBannerTitle ? (
-          <g id="thumbnail-title-banner">
-            <rect
-              x={safeArea.left}
-              y={safeArea.top + Math.round(10 * u)}
-              width={safeArea.width}
-              height={Math.round(230 * u)}
-              rx={Math.round(32 * u)}
-              fill="rgba(2, 6, 23, 0.94)"
-              stroke={variation.captionHighlight}
-              strokeWidth={Math.round(10 * u)}
-            />
-            <text
-              x={width / 2}
-              y={safeArea.top + Math.round(92 * u)}
-              textAnchor="middle"
-              fill={variation.captionHighlight}
-              fontSize={Math.round(38 * u)}
-              fontWeight="900"
-              fontFamily="Plus Jakarta Sans, sans-serif"
-              letterSpacing={2}
-            >
-              WHAT IF...
-            </text>
-            <text
-              x={width / 2}
-              y={safeArea.top + Math.round(156 * u)}
-              textAnchor="middle"
-              fill="#ffffff"
-              fontSize={Math.round(42 * u)}
-              fontWeight="900"
-              fontFamily="Plus Jakarta Sans, sans-serif"
-            >
-              {thumbnailBannerTitle.slice(0, 32).toUpperCase()}
-            </text>
-            {thumbnailBannerTitle.length > 32 && (
-              <text
-                x={width / 2}
-                y={safeArea.top + Math.round(208 * u)}
-                textAnchor="middle"
-                fill="#ffffff"
-                fontSize={Math.round(40 * u)}
-                fontWeight="900"
-                fontFamily="Plus Jakarta Sans, sans-serif"
-              >
-                {thumbnailBannerTitle.slice(32, 64).toUpperCase()}
-              </text>
-            )}
-          </g>
+          (() => {
+            const titleWords = thumbnailBannerTitle
+              .trim()
+              .split(/\s+/)
+              .filter(Boolean)
+              .map((w) => ({ word: w.toUpperCase() }));
+            const titleFontSize = Math.round(
+              (aspect === '9:16' || aspect === '3:4' ? 34 : 38) * u
+            );
+            const kickerFontSize = Math.round(26 * u);
+            const titleWordGap = Math.round(titleFontSize * 0.32);
+            const titleLineHeight = Math.round(titleFontSize * 1.24);
+            const padX = Math.round(36 * u);
+            const padY = Math.round(22 * u);
+            const maxTitleLineW = Math.max(200, safeArea.width - padX * 2);
+            const wrappedLines = wrapWordsByMeasuredWidth(
+              titleWords,
+              maxTitleLineW,
+              titleFontSize,
+              0,
+              titleWordGap,
+              BUNDLED_FONT_FAMILY
+            ).slice(0, 3);
+            const bannerTop = safeArea.top + Math.round(8 * u);
+            const bannerHeight = Math.round(
+              padY * 2 + kickerFontSize * 1.35 + wrappedLines.length * titleLineHeight
+            );
+            return (
+              <g id="thumbnail-title-banner">
+                <rect
+                  x={safeArea.left}
+                  y={bannerTop}
+                  width={safeArea.width}
+                  height={bannerHeight}
+                  rx={Math.round(28 * u)}
+                  fill="rgba(2, 6, 23, 0.94)"
+                  stroke={variation.captionHighlight}
+                  strokeWidth={Math.round(8 * u)}
+                />
+                <text
+                  x={safeArea.centerX}
+                  y={bannerTop + padY + Math.round(kickerFontSize * 0.85)}
+                  textAnchor="middle"
+                  fill={variation.captionHighlight}
+                  fontSize={kickerFontSize}
+                  fontWeight="900"
+                  fontFamily={BUNDLED_FONT_FAMILY}
+                  letterSpacing={2}
+                >
+                  WHAT IF...
+                </text>
+                {wrappedLines.map((line, lIdx) => (
+                  <text
+                    key={`thumb-line-${lIdx}`}
+                    x={safeArea.centerX}
+                    y={
+                      bannerTop +
+                      padY +
+                      Math.round(kickerFontSize * 1.45) +
+                      Math.round((lIdx + 0.82) * titleLineHeight)
+                    }
+                    textAnchor="middle"
+                    fill="#ffffff"
+                    fontSize={titleFontSize}
+                    fontWeight="900"
+                    fontFamily={BUNDLED_FONT_FAMILY}
+                  >
+                    {line.map((item) => item.word).join(' ')}
+                  </text>
+                ))}
+              </g>
+            );
+          })()
         ) : (
           <Caption
             words={scene.words}

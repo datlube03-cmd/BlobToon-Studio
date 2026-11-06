@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { AspectRatio, AspectRatioSchema } from '../aspect';
 import { validateCharacterTypeId } from '../characters';
 import {
@@ -733,9 +731,17 @@ export function parseScriptText(rawContent: string, filename = 'script.txt'): Sc
 }
 
 /**
- * Loads and parses either a `.script.txt` or `.json` script file from disk.
+ * Loads and parses either a `.script.txt` or `.json` script file from disk (Node/CLI only).
  */
 export function loadScriptFromFile(filePath: string): Script {
+  const getBuiltin = (
+    process as unknown as { getBuiltinModule?: (id: string) => unknown }
+  ).getBuiltinModule;
+  if (typeof getBuiltin !== 'function') {
+    throw new Error('loadScriptFromFile is only available in Node.js environments.');
+  }
+  const fs = getBuiltin('node:fs') as typeof import('node:fs');
+  const path = getBuiltin('node:path') as typeof import('node:path');
   const resolved = path.resolve(process.cwd(), filePath);
   if (!fs.existsSync(resolved)) {
     throw new Error(`Script file not found: ${resolved}`);

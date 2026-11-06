@@ -1,16 +1,10 @@
-import path from 'node:path';
 import { AspectRatio, getAspectPreset } from '../aspect';
 import { Script, PaletteVariation } from '../script/schema';
 import { PALETTE_VARIATIONS, computeTopicSeed } from '../script/variations';
 import { buildDeterministicScript } from '../script/generator';
 import { collectSfxEvents } from '../sfx/events';
 import { SkillRenderParams } from '../skills/schema';
-import {
-  TtsProvider,
-  concatenateWavFiles,
-  computeTtsCacheKey,
-  resolveLineVoice,
-} from '../voice/provider';
+import { TtsProvider, resolveLineVoice } from '../voice/shared';
 import {
   Timeline,
   TimelineAudioConfig,
@@ -327,23 +321,21 @@ export async function buildTimeline(
         totalDur += res.durationSec;
       }
 
-      if (lineFiles.length === 1) {
+      if (lineFiles.length === 1 || !ttsProvider.concatenateSceneLines) {
         voiceResults.push({
           file: lineFiles[0],
-          durationSec: Number(totalDur.toFixed(3)),
+          durationSec: Number(Math.max(0.5, totalDur).toFixed(3)),
           speedAdjusted: true,
         });
       } else {
-        const combinedKey = computeTtsCacheKey(
-          `scene:${scene.id}`,
-          lineFiles.join('|'),
+        const combined = await ttsProvider.concatenateSceneLines(
+          lineFiles,
+          scene.id,
           globalSpeedMultiplier
         );
-        const combinedPath = path.join(path.dirname(lineFiles[0]), `scene_${combinedKey}.wav`);
-        const concatDur = await concatenateWavFiles(lineFiles, combinedPath);
         voiceResults.push({
-          file: combinedPath,
-          durationSec: Number(Math.max(0.5, concatDur).toFixed(3)),
+          file: combined.file,
+          durationSec: combined.durationSec,
           speedAdjusted: true,
         });
       }
