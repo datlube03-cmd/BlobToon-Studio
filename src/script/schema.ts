@@ -2,32 +2,18 @@ import { z } from 'zod';
 import { AspectRatioSchema } from '../aspect';
 import { SkillRenderParamsSchema } from '../skills/schema';
 
-export { AspectRatioSchema };
-export type { AspectRatio } from '../aspect';
-
 export const EmotionSchema = z.enum([
   'happy',
-  'sad',
   'shock',
+  'sad',
   'angry',
   'smug',
+  'scared',
   'sleepy',
   'laughing',
   'excited',
 ]);
 export type Emotion = z.infer<typeof EmotionSchema>;
-
-export const AccessorySchema = z.enum([
-  'none',
-  'hoodie',
-  'cap',
-  'glasses',
-  'crown',
-  'headphones',
-  'bandana',
-  'bowtie',
-]);
-export type Accessory = z.infer<typeof AccessorySchema>;
 
 export const AnimationTypeSchema = z.enum([
   'idle',
@@ -42,17 +28,17 @@ export const AnimationTypeSchema = z.enum([
 ]);
 export type AnimationType = z.infer<typeof AnimationTypeSchema>;
 
-export const PropTypeSchema = z.enum([
-  'phone',
-  'controller',
-  'clock',
-  'homework',
-  'toothbrush',
-  'door',
-  'heart',
-  'trophy',
+export const AccessorySchema = z.enum([
+  'none',
+  'headphones',
+  'glasses',
+  'crown',
+  'cap',
+  'hoodie',
+  'bowtie',
+  'bandana',
 ]);
-export type PropType = z.infer<typeof PropTypeSchema>;
+export type Accessory = z.infer<typeof AccessorySchema>;
 
 export const BackgroundTypeSchema = z.enum([
   'room',
@@ -64,69 +50,27 @@ export const BackgroundTypeSchema = z.enum([
 ]);
 export type BackgroundType = z.infer<typeof BackgroundTypeSchema>;
 
+export const PropTypeSchema = z.enum([
+  'phone',
+  'controller',
+  'trophy',
+  'clock',
+  'homework',
+  'door',
+  'heart',
+  'toothbrush',
+]);
+export type PropType = z.infer<typeof PropTypeSchema>;
+
 export const TransitionTypeSchema = z.enum([
-  'wipe',
-  'zoom',
-  'iris',
-  'slide',
   'hard-cut',
+  'zoom',
+  'wipe',
+  'slide',
+  'iris',
   'fade',
 ]);
 export type TransitionType = z.infer<typeof TransitionTypeSchema>;
-
-export const CharacterSpecSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a 6-digit hex code'),
-  accessory: AccessorySchema.default('none'),
-  hoodieColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  size: z.number().min(0.3).max(2.2).default(1.0),
-  x: z.number().min(0).max(1920).default(0.32),
-  y: z.number().min(0).max(1920).default(0.62),
-  emotion: EmotionSchema.default('happy'),
-  animation: AnimationTypeSchema.default('idle'),
-  speaking: z.boolean().default(false),
-  flipX: z.boolean().default(false),
-});
-export type CharacterSpec = z.infer<typeof CharacterSpecSchema>;
-
-export const PropInstanceSchema = z.object({
-  id: z.string().min(1),
-  type: PropTypeSchema,
-  x: z.number().min(0).max(1920).default(0.5),
-  y: z.number().min(0).max(1920).default(0.45),
-  scale: z.number().min(0.3).max(2.5).default(1.0),
-  rotation: z.number().min(-180).max(180).default(0),
-  animation: AnimationTypeSchema.default('idle'),
-  label: z.string().optional(),
-});
-export type PropInstance = z.infer<typeof PropInstanceSchema>;
-
-export const BeatSchema = z.object({
-  atProgress: z.number().min(0).max(1),
-  targetId: z.string().min(1),
-  emotion: EmotionSchema.optional(),
-  animation: AnimationTypeSchema.optional(),
-  bubbleText: z.string().max(70).optional(),
-  propType: PropTypeSchema.optional(),
-});
-export type Beat = z.infer<typeof BeatSchema>;
-
-export const CharacterLayoutOverrideSchema = z.object({
-  id: z.string().min(1),
-  x: z.number().min(0).max(1920).optional(),
-  y: z.number().min(0).max(1920).optional(),
-  size: z.number().min(0.3).max(2.2).optional(),
-});
-
-export const AspectLayoutOverrideSchema = z.object({
-  characters: z.array(CharacterLayoutOverrideSchema).optional(),
-  captionY: z.number().min(0).max(1920).optional(),
-});
-
-export const LayoutOverridesMapSchema = z
-  .record(z.string(), AspectLayoutOverrideSchema)
-  .optional();
 
 export const SFX_NAMES = [
   'pop',
@@ -142,67 +86,169 @@ export const SFX_NAMES = [
   'swish',
 ] as const;
 
-export const SfxNameSchema = z.enum(SFX_NAMES);
-export type SfxName = z.infer<typeof SfxNameSchema>;
+export const SfxTypeSchema = z.enum(SFX_NAMES);
+export type SfxType = z.infer<typeof SfxTypeSchema>;
+export type SfxName = SfxType;
 
-export const ManualSfxEventSchema = z.object({
-  type: SfxNameSchema,
+export const SceneManualSfxSchema = z.object({
+  type: SfxTypeSchema,
   atSec: z.number().min(0),
   volume: z.number().min(0).max(1).optional(),
+  variant: z.number().int().min(0).max(2).optional(),
   pan: z.number().min(-1).max(1).optional(),
 });
-export type ManualSfxEvent = z.infer<typeof ManualSfxEventSchema>;
+export type SceneManualSfx = z.infer<typeof SceneManualSfxSchema>;
 
-export const SceneSfxFieldSchema = z
-  .union([z.boolean(), z.array(ManualSfxEventSchema)])
-  .optional();
+export const SceneSfxFieldSchema = z.union([z.literal(false), z.array(SceneManualSfxSchema)]);
 export type SceneSfxField = z.infer<typeof SceneSfxFieldSchema>;
 
-export const ScriptSceneSchema = z.object({
+export const CharacterSpecSchema = z.object({
   id: z.string().min(1),
-  label: z.string().min(1).max(32),
-  narration: z.string().min(5),
-  caption: z.string().min(5),
-  background: BackgroundTypeSchema,
-  transition: TransitionTypeSchema.default('wipe'),
-  characters: z.array(CharacterSpecSchema).min(1).max(4),
-  props: z.array(PropInstanceSchema).default([]),
-  beats: z.array(BeatSchema).default([]),
-  sfx: SceneSfxFieldSchema,
-  layoutOverrides: LayoutOverridesMapSchema,
+  name: z.string().min(1),
+  type: z.string().min(1).default('blob'),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a 6-digit hex code'),
+  accentColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'Accent color must be a 6-digit hex code')
+    .optional(),
+  voice: z.string().optional(),
+  accessory: AccessorySchema.default('none'),
+  hoodieColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  size: z.number().min(0.6).max(1.5).default(1),
+  x: z.number().min(0.08).max(0.92).default(0.5),
+  y: z.number().min(0.3).max(0.88).default(0.62),
+  emotion: EmotionSchema.default('happy'),
+  animation: AnimationTypeSchema.default('idle'),
+  speaking: z.boolean().default(false),
+  flipX: z.boolean().default(false),
 });
-export type ScriptScene = z.infer<typeof ScriptSceneSchema>;
+export type CharacterSpec = z.infer<typeof CharacterSpecSchema>;
+
+export const PropSpecSchema = z.object({
+  id: z.string().min(1),
+  type: PropTypeSchema,
+  x: z.number().min(0.08).max(0.92),
+  y: z.number().min(0.18).max(0.85),
+  scale: z.number().min(0.4).max(2.0).default(1),
+  rotation: z.number().min(-180).max(180).default(0),
+  animation: AnimationTypeSchema.default('idle'),
+  label: z.string().max(26).optional(),
+});
+export type PropSpec = z.infer<typeof PropSpecSchema>;
+
+export const BeatSpecSchema = z.object({
+  atProgress: z.number().min(0).max(0.95),
+  targetId: z.string().min(1),
+  emotion: EmotionSchema.optional(),
+  animation: AnimationTypeSchema.optional(),
+  bubbleText: z.string().max(48).optional(),
+  propType: PropTypeSchema.optional(),
+  x: z.number().min(0.08).max(0.92).optional(),
+  y: z.number().min(0.3).max(0.88).optional(),
+});
+export type BeatSpec = z.infer<typeof BeatSpecSchema>;
+
+export const ScriptLineSchema = z.object({
+  speakerId: z.string().min(1),
+  text: z.string().min(1),
+  emotion: EmotionSchema.optional(),
+  animation: AnimationTypeSchema.optional(),
+  x: z.number().min(0.08).max(0.92).optional(),
+  walkToX: z.number().min(0.08).max(0.92).optional(),
+  voice: z.string().optional(),
+  speed: z.number().min(0.5).max(2.5).optional(),
+  silent: z.boolean().default(false),
+});
+export type ScriptLine = z.infer<typeof ScriptLineSchema>;
+
+export const AspectLayoutOverrideSchema = z.object({
+  characters: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        x: z.number().min(0.08).max(0.92).optional(),
+        y: z.number().min(0.3).max(0.88).optional(),
+        size: z.number().min(0.6).max(1.5).optional(),
+      })
+    )
+    .optional(),
+  props: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        x: z.number().min(0.08).max(0.92).optional(),
+        y: z.number().min(0.18).max(0.85).optional(),
+        scale: z.number().min(0.4).max(2.0).optional(),
+      })
+    )
+    .optional(),
+});
+export type AspectLayoutOverride = z.infer<typeof AspectLayoutOverrideSchema>;
+
+export const SceneLayoutOverridesSchema = z.object({
+  '9:16': AspectLayoutOverrideSchema.optional(),
+  '16:9': AspectLayoutOverrideSchema.optional(),
+  '4:3': AspectLayoutOverrideSchema.optional(),
+  '3:4': AspectLayoutOverrideSchema.optional(),
+});
+export type SceneLayoutOverrides = z.infer<typeof SceneLayoutOverridesSchema>;
+
+export const SceneSpecSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  narration: z.string().min(1),
+  caption: z.string().min(1),
+  background: BackgroundTypeSchema,
+  bgColors: z
+    .tuple([
+      z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    ])
+    .optional(),
+  transition: TransitionTypeSchema.default('zoom'),
+  characters: z.array(CharacterSpecSchema).min(1).max(4),
+  props: z.array(PropSpecSchema).max(4).default([]),
+  beats: z.array(BeatSpecSchema).default([]),
+  lines: z.array(ScriptLineSchema).optional(),
+  sfx: SceneSfxFieldSchema.optional(),
+  layoutOverrides: SceneLayoutOverridesSchema.optional(),
+});
+export type SceneSpec = z.infer<typeof SceneSpecSchema>;
 
 export const ScriptSchema = z.object({
   aspect: AspectRatioSchema.default('9:16'),
+  voice: z.string().optional(),
   skill: z.string().optional(),
   renderParams: SkillRenderParamsSchema.optional(),
   topic: z.string().min(3),
-  title: z.string().min(5).max(100),
-  hook: z.string().min(5),
-  description: z.string().min(10),
-  hashtags: z.array(z.string()).min(3).max(10),
-  scenes: z.array(ScriptSceneSchema).min(3).max(8),
+  title: z.string().min(3).max(95),
+  hook: z.string().min(3),
+  description: z.string().min(5),
+  hashtags: z.array(z.string().min(2)).min(1).max(10),
+  scenes: z.array(SceneSpecSchema).min(1).max(12),
 });
 export type Script = z.infer<typeof ScriptSchema>;
 
 export const PaletteVariationSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
+  id: z.string(),
+  name: z.string(),
   skyTop: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   skyBottom: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   floorColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   wallAccent: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  characterPalette: z.array(z.string().regex(/^#[0-9a-fA-F]{6}$/)).min(2),
   captionHighlight: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  characterPalette: z.array(z.string().regex(/^#[0-9a-fA-F]{6}$/)).min(3),
-  defaultAccessories: z.array(AccessorySchema).min(2),
-  preferredProps: z.array(PropTypeSchema).min(2),
+  defaultAccessories: z.array(AccessorySchema).default(['headphones', 'glasses', 'hoodie']),
+  preferredProps: z.array(PropTypeSchema).default(['controller', 'phone', 'trophy', 'heart']),
 });
 export type PaletteVariation = z.infer<typeof PaletteVariationSchema>;
 
 export function countSpokenWords(script: Script): number {
-  return script.scenes.reduce((acc, s) => {
-    const words = s.narration
+  return script.scenes.reduce((acc, scene) => {
+    const words = scene.narration
       .trim()
       .split(/\s+/)
       .filter(Boolean);
@@ -210,8 +256,9 @@ export function countSpokenWords(script: Script): number {
   }, 0);
 }
 
-export function estimateScriptDurationSec(script: Script, wordsPerSecond = 2.45): number {
-  const totalWords = countSpokenWords(script);
-  const scenePadding = script.scenes.length * 0.45;
-  return Number((totalWords / wordsPerSecond + scenePadding).toFixed(2));
+export function estimateScriptDurationSec(script: Script): number {
+  const words = countSpokenWords(script);
+  const voiceSec = words / 2.6;
+  const paddingSec = script.scenes.length * 0.45;
+  return Number((voiceSec + paddingSec).toFixed(2));
 }

@@ -1,0 +1,279 @@
+{
+  "aspect": "9:16",
+  "voice": "Narrator",
+  "topic": "What if Mom played on your Roblox account",
+  "title": "What if Mom played on your Roblox account?",
+  "hook": "Yay, game time! Hand it over, my turn. Day one looks easy.",
+  "description": "What if Mom played on your Roblox account? — Manual 2D BlobToon cartoon rendered from demo.script.txt.",
+  "hashtags": [
+    "#whatif",
+    "#shorts",
+    "#animation",
+    "#blobtoon"
+  ],
+  "scenes": [
+    {
+      "id": "scene_1",
+      "label": "DAY 1",
+      "narration": "Yay, game time! Hand it over, my turn. Day one looks easy.",
+      "caption": "DAY 1: Mom sets a 1 hour limit",
+      "background": "room",
+      "bgColors": [
+        "#ffd6a5",
+        "#fdffb6"
+      ],
+      "transition": "zoom",
+      "characters": [
+        {
+          "id": "kid",
+          "name": "Kid",
+          "type": "blob",
+          "color": "#4cc9f0",
+          "voice": "Voice A",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.3,
+          "y": 0.62,
+          "emotion": "happy",
+          "animation": "bounce",
+          "speaking": true,
+          "flipX": false
+        },
+        {
+          "id": "mom",
+          "name": "Mom",
+          "type": "blob",
+          "color": "#f72585",
+          "voice": "Voice B",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.7,
+          "y": 0.62,
+          "emotion": "angry",
+          "animation": "slide-in",
+          "speaking": true,
+          "flipX": true
+        }
+      ],
+      "props": [
+        {
+          "id": "prop_1_1",
+          "type": "phone",
+          "x": 0.5,
+          "y": 0.6,
+          "scale": 1.1,
+          "rotation": 0,
+          "animation": "bounce"
+        }
+      ],
+      "beats": [
+        {
+          "atProgress": 0.08,
+          "targetId": "kid",
+          "emotion": "happy",
+          "animation": "bounce",
+          "bubbleText": "Yay, game time!",
+          "x": 0.3
+        },
+        {
+          "atProgress": 0.4,
+          "targetId": "mom",
+          "emotion": "angry",
+          "animation": "slide-in",
+          "bubbleText": "Hand it over, my turn.",
+          "x": 0.7
+        }
+      ],
+      "lines": [
+        {
+          "speakerId": "kid",
+          "text": "Yay, game time!",
+          "emotion": "happy",
+          "animation": "bounce",
+          "x": 0.3,
+          "silent": false
+        },
+        {
+          "speakerId": "mom",
+          "text": "Hand it over, my turn.",
+          "emotion": "angry",
+          "animation": "slide-in",
+          "x": 0.7,
+          "silent": false
+        },
+        {
+          "speakerId": "narrator",
+          "text": "Day one looks easy.",
+          "silent": false
+        }
+      ]
+    },
+    {
+      "id": "scene_2",
+      "label": "DAY 2",
+      "narration": "I beat your high score! Wait... how?!",
+      "caption": "I beat your high score! Wait... how?!",
+      "background": "arcade",
+      "bgColors": [
+        "#caffbf",
+        "#9bf6ff"
+      ],
+      "transition": "wipe",
+      "characters": [
+        {
+          "id": "mom",
+          "name": "Mom",
+          "type": "blob",
+          "color": "#f72585",
+          "voice": "Voice B",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.5,
+          "y": 0.62,
+          "emotion": "excited",
+          "animation": "jump",
+          "speaking": true,
+          "flipX": false
+        },
+        {
+          "id": "kid",
+          "name": "Kid",
+          "type": "blob",
+          "color": "#4cc9f0",
+          "voice": "Voice A",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.7,
+          "y": 0.62,
+          "emotion": "shock",
+          "animation": "walk",
+          "speaking": true,
+          "flipX": true
+        }
+      ],
+      "props": [],
+      "beats": [
+        {
+          "atProgress": 0.1,
+          "targetId": "mom",
+          "emotion": "excited",
+          "animation": "jump",
+          "bubbleText": "I beat your high score!",
+          "x": 0.5
+        },
+        {
+          "atProgress": 0.6,
+          "targetId": "kid",
+          "emotion": "shock",
+          "animation": "walk",
+          "bubbleText": "Wait... how?!",
+          "x": 0.4
+        }
+      ],
+      "lines": [
+        {
+          "speakerId": "mom",
+          "text": "I beat your high score!",
+          "emotion": "excited",
+          "animation": "jump",
+          "x": 0.5,
+          "silent": false
+        },
+        {
+          "speakerId": "kid",
+          "text": "Wait... how?!",
+          "emotion": "shock",
+          "animation": "walk",
+          "walkToX": 0.4,
+          "silent": false
+        }
+      ]
+    },
+    {
+      "id": "scene_3",
+      "label": "DAY 3",
+      "narration": "Your whole squad just voted me guild leader! Would you finish every chore or start a brand new save file?",
+      "caption": "DAY 3: Mom is the new clan leader",
+      "background": "kitchen",
+      "bgColors": [
+        "#fbcfe8",
+        "#e9d5ff"
+      ],
+      "transition": "slide",
+      "characters": [
+        {
+          "id": "mom",
+          "name": "Mom",
+          "type": "blob",
+          "color": "#f72585",
+          "voice": "Voice B",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.68,
+          "y": 0.62,
+          "emotion": "smug",
+          "animation": "bounce",
+          "speaking": true,
+          "flipX": true
+        },
+        {
+          "id": "kid",
+          "name": "Kid",
+          "type": "blob",
+          "color": "#4cc9f0",
+          "voice": "Voice A",
+          "accessory": "none",
+          "size": 1,
+          "x": 0.32,
+          "y": 0.62,
+          "emotion": "sad",
+          "animation": "shake",
+          "speaking": false,
+          "flipX": false
+        }
+      ],
+      "props": [],
+      "beats": [
+        {
+          "atProgress": 0.08,
+          "targetId": "mom",
+          "emotion": "smug",
+          "animation": "bounce",
+          "bubbleText": "Your whole squad just voted me guild leader!",
+          "x": 0.68
+        },
+        {
+          "atProgress": 0.4,
+          "targetId": "kid",
+          "emotion": "sad",
+          "animation": "shake",
+          "bubbleText": "Not my main account!",
+          "x": 0.32
+        }
+      ],
+      "lines": [
+        {
+          "speakerId": "mom",
+          "text": "Your whole squad just voted me guild leader!",
+          "emotion": "smug",
+          "animation": "bounce",
+          "x": 0.68,
+          "silent": false
+        },
+        {
+          "speakerId": "kid",
+          "text": "Not my main account!",
+          "emotion": "sad",
+          "animation": "shake",
+          "x": 0.32,
+          "silent": true
+        },
+        {
+          "speakerId": "narrator",
+          "text": "Would you finish every chore or start a brand new save file?",
+          "silent": false
+        }
+      ]
+    }
+  ]
+}

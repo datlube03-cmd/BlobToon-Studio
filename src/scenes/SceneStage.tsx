@@ -2,22 +2,20 @@ import React from 'react';
 import { interpolate } from 'remotion';
 import {
   AspectRatio,
-  BUNDLED_FONT_FAMILY,
   BoundingBox,
+  SafeAreaBox,
+  StageLayoutMetrics,
   computeBubblePlacement,
   computeStageLayout,
-  measureTextWidth,
-  resolveBundledFontFamily,
 } from '../aspect';
-import { getBundledFontFaceCss } from '../fonts/bundledFont';
-import { PaletteVariation } from '../script/schema';
-import { SkillRenderParams } from '../skills/schema';
-import { TimelineScene } from '../timeline/schema';
-import { Blob } from '../characters/Blob';
+import { getCharacterDefinition, BlobCharacterDef } from '../characters';
 import { Caption, computeCaptionLayout } from '../characters/Caption';
 import { Prop } from '../characters/Prop';
 import { SpeechBubble } from '../characters/SpeechBubble';
+import { AnimationType, Emotion, PaletteVariation, TransitionType } from '../script/schema';
+import { SkillRenderParams } from '../skills/schema';
 import { resolveVariationWithColorPalette } from '../timeline/builder';
+import { TimelineScene } from '../timeline/schema';
 import { Background } from './Background';
 
 export interface SceneStageProps {
@@ -31,81 +29,157 @@ export interface SceneStageProps {
   thumbnailBannerTitle?: string;
 }
 
+function computeSceneTransitionStyle(
+  transition: TransitionType,
+  sceneFrame: number,
+  durationInFrames: number,
+  width: number,
+  height: number
+): { transform?: string; opacity: number; clipPath?: string } {
+  const enterProgress = Math.min(1, sceneFrame / 9);
+  const exitStart = Math.max(10, durationInFrames - 6);
+  const exitProgress =
+    sceneFrame >= exitStart ? Math.min(1, (sceneFrame - exitStart) / 6) : 0;
+
+  const opacity = exitProgress > 0 ? interpolate(exitProgress, [0, 1], [1, 0.85]) : 1;
+  const cx = width / 2;
+  const cy = Math.round(height * 0.48);
+  const maxRadius = Math.round(Math.hypot(width, height) * 0.85);
+
+  switch (transition) {
+    case 'hard-cut':
+      return { opacity: 1 };
+    case 'zoom': {
+      const scale = interpolate(enterProgress, [0, 1], [1.14, 1]);
+      return {
+        transform: `translate(${cx}, ${cy}) scale(${scale}) translate(${-cx}, ${-cy})`,
+        opacity,
+      };
+    }
+    case 'slide': {
+      const tx = interpolate(enterProgress, [0, 1], [Math.round(width * 0.12), 0]);
+      return {
+        transform: `translate(${tx}, 0)`,
+        opacity,
+      };
+    }
+    case 'wipe': {
+      const ty = interpolate(enterProgress, [0, 1], [Math.round(height * 0.045), 0]);
+      return {
+        transform: `translate(0, ${ty})`,
+        opacity,
+      };
+    }
+    case 'iris': {
+      const r = interpolate(enterProgress, [0, 1], [Math.round(maxRadius * 0.25), maxRadius]);
+      return {
+        clipPath: enterProgress < 1 ? `circle(${r}px at ${cx}px ${cy}px)` : undefined,
+        opacity,
+      };
+    }
+    case 'fade': {
+      return {
+        opacity: interpolate(enterProgress, [0, 1], [0.15, opacity]),
+      };
+    }
+  }
+}
+
+export interface ResolvedCharacterBeatState {
+  emotion: Emotion;
+  animation: AnimationType;
+  bubbleText?: string;
+  xOverride?: number;
+  yOverride?: number;
+}
+
+export function resolveCharacterBeatState(
+  scene: TimelineScene,
+  charId: string,
+  defaultEmotion: Emotion,
+  defaultAnimation: AnimationType,
+  sceneProgress: number
+): ResolvedCharacterBeatState {
+  let emotion = defaultEmotion;
+  let animation = defaultAnimation;
+  let bubbleText: string | undefined;
+  let xOverride: number | undefined;
+  let yOverride: number | undefined;
+
+  for (const beat of scene.beats) {
+    if (beat.targetId !== charId) continue;
+    if (sceneProgress >= beat.atProgress && sceneProgress <= beat.atProgress + 0.34) {
+      if (beat.emotion) emotion = beat.emotion;
+      if (beat.animation) animation = beat.animation;
+      if (beat.bubbleText) bubbleText = beat.bubbleText;
+      if (beat.x !== undefined) xOverride = beat.x;
+      if (beat.y !== undefined) yOverride = beat.y;
+    }
+  }
+
+  return { emotion, animation, bubbleText, xOverride, yOverride };
+}
+
 /**
- * Computes all active text/UI bounding boxes in a scene at `sceneFrame` for `aspect`.
- * Used by unit tests to guarantee that no text box or bubble ever leaves `safeArea`.
+ * Computes all rendered text & UI bounding boxes for a given scene, aspect ratio, and frame.
+ * Used by automated aspect-ratio tests to verify zero boxes leave the safe area.
  */
 export function collectSceneBoundingBoxes(
   scene: TimelineScene,
   aspect: AspectRatio,
-  sceneFrame: number,
-  thumbnailBannerTitle?: string
-): {
-  boxes: BoundingBox[];
-  safeArea: ReturnType<typeof computeStageLayout>['safeArea'];
-} {
-  const override = scene.layoutOverrides?.[aspect];
-  const layout = computeStageLayout(aspect, scene.characters, scene.props, override);
+  sceneFrame: number
+): { stageLayout: StageLayoutMetrics; safeArea: SafeAreaBox; boxes: BoundingBox[] } {
+  const stageLayout = computeStageLayout(
+    aspect,
+    scene.characters,
+    scene.props,
+    scene.layoutOverrides?.[aspect]
+  );
   const boxes: BoundingBox[] = [];
 
-  if (!thumbnailBannerTitle) {
-    boxes.push(layout.chapterBadge.box);
-    const cap = computeCaptionLayout(scene.words, sceneFrame, layout);
-    if (cap) {
-      boxes.push(cap.backdropBox);
-      for (const item of cap.items) {
-        boxes.push(item.box);
-      }
-    }
-  } else {
-    const thumbBox = computeThumbnailBannerBox(layout);
-    boxes.push(thumbBox);
+  // 1. Chapter Badge Box
+  boxes.push(stageLayout.chapterBadge.box);
+
+  // 2. Caption Box
+  const captionInfo = computeCaptionLayout(scene.words, sceneFrame, stageLayout);
+  if (captionInfo) {
+    boxes.push(captionInfo.backdropBox);
   }
 
-  // Character nameplates & active speech bubbles
-  const progress = Math.max(0, Math.min(1, sceneFrame / Math.max(1, scene.durationInFrames)));
-  for (const char of scene.characters) {
-    const placement = layout.characters.get(char.id);
-    if (!placement) continue;
-    boxes.push(placement.nameTagBox);
+  // 3. Active Speech Bubbles & Nameplates
+  const sceneProgress = sceneFrame / Math.max(1, scene.durationInFrames);
 
-    for (const beat of scene.beats) {
-      if (
-        beat.targetId === char.id &&
-        beat.bubbleText &&
-        progress >= beat.atProgress &&
-        progress <= beat.atProgress + 0.42
-      ) {
-        const bubble = computeBubblePlacement(beat.bubbleText, placement, layout);
-        boxes.push(bubble.box);
-      }
+  scene.characters.forEach((char) => {
+    const cLayout = stageLayout.characters.get(char.id);
+    if (!cLayout) return;
+
+    boxes.push(cLayout.nameTagBox);
+
+    const beatState = resolveCharacterBeatState(
+      scene,
+      char.id,
+      char.emotion,
+      char.animation,
+      sceneProgress
+    );
+
+    if (beatState.bubbleText) {
+      const bubblePlacement = computeBubblePlacement(beatState.bubbleText, cLayout, stageLayout);
+      boxes.push(bubblePlacement.box);
     }
-  }
+  });
 
-  for (const prop of scene.props) {
-    const prPlacement = layout.props.get(prop.id);
-    if (prPlacement?.labelBox) {
-      boxes.push(prPlacement.labelBox);
+  // 4. Prop label boxes
+  stageLayout.props.forEach((p) => {
+    if (p.labelBox) {
+      boxes.push(p.labelBox);
     }
-  }
+  });
 
-  return { boxes, safeArea: layout.safeArea };
-}
-
-function computeThumbnailBannerBox(layout: ReturnType<typeof computeStageLayout>): BoundingBox {
-  const { safeArea, unit } = layout;
-  const u = unit / 1080;
-  const bannerW = Math.min(Math.round(safeArea.width * 0.92), Math.round(920 * u));
-  const bannerH = Math.round(240 * u);
-  const cx = safeArea.centerX;
-  const topY = Math.round(safeArea.top + 38 * u);
   return {
-    id: 'thumbnail-banner',
-    kind: 'thumbnail-title',
-    left: Math.round(cx - bannerW / 2),
-    top: Math.round(topY - 28 * u),
-    right: Math.round(cx + bannerW / 2),
-    bottom: Math.round(topY + bannerH),
+    stageLayout,
+    safeArea: stageLayout.safeArea,
+    boxes,
   };
 }
 
@@ -120,131 +194,77 @@ export const SceneStage: React.FC<SceneStageProps> = ({
   thumbnailBannerTitle,
 }) => {
   const variation = resolveVariationWithColorPalette(rawVariation, renderParams?.colorPalette);
-  const override = scene.layoutOverrides?.[aspect];
-  const layout = computeStageLayout(aspect, scene.characters, scene.props, override);
-  const { width, height, unit, groundY, safeArea, chapterBadge } = layout;
-  const u = unit / 1080;
-
-  const progress = Math.max(0, Math.min(1, sceneFrame / Math.max(1, scene.durationInFrames)));
-  const isVoiceActive = sceneFrame <= scene.voiceDurationSec * fps;
-
   const effectiveTransition = renderParams?.transitionType ?? scene.transition;
   const cameraShake = renderParams?.cameraShake ?? 'none';
   const zoomPunchOnPunchline = renderParams?.zoomPunchOnPunchline ?? false;
   const captionStyle = renderParams?.captionStyle ?? 'default';
-  const fontFamily = resolveBundledFontFamily(renderParams?.fontFamily);
 
-  // Aspect-aware transition entrance during first 10 frames (skipped when transitionType is 'hard-cut')
-  const transitionFrames = effectiveTransition === 'hard-cut' ? 0 : 10;
-  const inTransition = sceneFrame < transitionFrames && !thumbnailBannerTitle;
-  const transT = transitionFrames > 0 ? Math.min(1, sceneFrame / transitionFrames) : 1;
+  const stageLayout = computeStageLayout(
+    aspect,
+    scene.characters,
+    scene.props,
+    scene.layoutOverrides?.[aspect]
+  );
+  const { width, height, unit, safeArea, groundY, chapterBadge } = stageLayout;
+  const u = unit / 1080;
 
-  // Punchline zoom-punch effect when zoomPunchOnPunchline is enabled
-  const lastBeatProgress =
-    scene.beats.length > 0 ? scene.beats[scene.beats.length - 1].atProgress : 0.6;
-  const punchStart = Math.max(0.45, lastBeatProgress);
-  const zoomPunchActive =
-    zoomPunchOnPunchline && !thumbnailBannerTitle && progress >= punchStart;
-  const zoomPunchScale = zoomPunchActive
-    ? interpolate(
-        Math.min(1, (progress - punchStart) / Math.max(0.08, 1 - punchStart)),
-        [0, 0.35, 1],
-        [1.0, 1.11, 1.07]
-      )
-    : 1.0;
+  const sceneProgress = sceneFrame / Math.max(1, scene.durationInFrames);
+  const voiceActiveFrames = Math.round(scene.voiceDurationSec * fps);
+  const isVoiceActive = sceneFrame <= voiceActiveFrames;
 
-  // Deterministic camera shake from renderParams.cameraShake
-  const shakeAmplitude =
+  const isPunchlineMoment =
+    zoomPunchOnPunchline &&
+    (sceneProgress >= 0.58 || scene.beats.some((b) => Math.abs(sceneProgress - b.atProgress) <= 0.12));
+
+  const trans = computeSceneTransitionStyle(
+    effectiveTransition,
+    sceneFrame,
+    scene.durationInFrames,
+    width,
+    height
+  );
+
+  const shakeAmp =
     cameraShake === 'high'
       ? 14 * u
       : cameraShake === 'medium'
       ? 7.5 * u
       : cameraShake === 'low'
-      ? 3.2 * u
+      ? 3.5 * u
       : 0;
-  const shakeDx =
-    shakeAmplitude && !thumbnailBannerTitle
-      ? Number((Math.sin(sceneFrame * 1.85) * shakeAmplitude).toFixed(2))
-      : 0;
-  const shakeDy =
-    shakeAmplitude && !thumbnailBannerTitle
-      ? Number((Math.cos(sceneFrame * 2.35) * shakeAmplitude * 0.75).toFixed(2))
-      : 0;
+  const shakeDx = shakeAmp ? Number((Math.sin(sceneFrame * 1.85) * shakeAmp).toFixed(2)) : 0;
+  const shakeDy = shakeAmp ? Number((Math.cos(sceneFrame * 2.35) * shakeAmp * 0.75).toFixed(2)) : 0;
+  const punchScale = isPunchlineMoment
+    ? Number((1 + Math.sin(sceneFrame * 0.45) * 0.035 + 0.045).toFixed(3))
+    : 1;
 
-  const transformParts: string[] = [];
-  if (inTransition) {
-    if (effectiveTransition === 'zoom') {
-      const s = interpolate(transT, [0, 1], [1.14, 1.0]);
-      transformParts.push(
-        `translate(${(width / 2) * (1 - s)}, ${(height / 2) * (1 - s)}) scale(${s})`
-      );
-    } else if (effectiveTransition === 'slide') {
-      const tx = interpolate(transT, [0, 1], [width, 0]);
-      transformParts.push(`translate(${tx}, 0)`);
-    }
-  }
-  if (zoomPunchScale > 1.001) {
-    transformParts.push(
-      `translate(${((width / 2) * (1 - zoomPunchScale)).toFixed(2)}, ${(
-        groundY *
-        0.85 *
-        (1 - zoomPunchScale)
-      ).toFixed(2)}) scale(${zoomPunchScale.toFixed(4)})`
-    );
-  }
-  if (shakeDx !== 0 || shakeDy !== 0) {
-    transformParts.push(`translate(${shakeDx}, ${shakeDy})`);
-  }
-  const stageTransform = transformParts.join(' ');
-  const stageOpacity =
-    inTransition && effectiveTransition === 'fade'
-      ? interpolate(transT, [0, 1], [0.25, 1.0])
-      : 1.0;
-
-  // Evaluate active beats up to current progress
-  const activeBeatsByChar = new Map<
-    string,
-    {
-      emotion?: TimelineScene['characters'][0]['emotion'];
-      animation?: TimelineScene['characters'][0]['animation'];
-      bubbleText?: string;
-      beatFrameStart: number;
-    }
-  >();
-
-  for (const beat of scene.beats) {
-    if (progress >= beat.atProgress) {
-      const beatFrameStart = Math.round(beat.atProgress * scene.durationInFrames);
-      activeBeatsByChar.set(beat.targetId, {
-        emotion: beat.emotion,
-        animation: beat.animation,
-        bubbleText: progress <= beat.atProgress + 0.42 ? beat.bubbleText : undefined,
-        beatFrameStart,
-      });
-    }
-  }
-
-  const thumbBox = computeThumbnailBannerBox(layout);
-  const thumbW = thumbBox.right - thumbBox.left;
-  const thumbH = thumbBox.bottom - thumbBox.top - Math.round(28 * u);
-  const thumbCenterY = Math.round(thumbBox.top + 28 * u + thumbH / 2);
+  const cx = width / 2;
+  const cy = Math.round(height * 0.48);
+  const skillCameraTransform =
+    shakeDx !== 0 || shakeDy !== 0 || punchScale !== 1
+      ? `translate(${cx + shakeDx}, ${cy + shakeDy}) scale(${punchScale}) translate(${-cx}, ${-cy})`
+      : undefined;
+  const combinedTransform =
+    [trans.transform, skillCameraTransform].filter(Boolean).join(' ') || undefined;
 
   return (
     <svg
       viewBox={`0 0 ${width} ${height}`}
-      width={width}
-      height={height}
+      width="100%"
+      height="100%"
       xmlns="http://www.w3.org/2000/svg"
-      style={{ width: '100%', height: '100%', display: 'block', background: variation.floorColor }}
+      data-aspect={aspect}
       data-transition={effectiveTransition}
       data-camera-shake={cameraShake}
       data-caption-style={captionStyle}
+      style={{
+        display: 'block',
+        backgroundColor: variation.skyTop,
+        userSelect: 'none',
+      }}
     >
-      <defs>
-        <style>{getBundledFontFaceCss()}</style>
-      </defs>
-      <g transform={stageTransform || undefined} opacity={stageOpacity < 1 ? stageOpacity : undefined}>
-        {/* 1. Aspect-Adaptive Background Environment */}
+      <g transform={combinedTransform} opacity={trans.opacity} clipPath={trans.clipPath}>
+        {/* 1. Procedural Vector Environment Background */}
         <Background
           type={scene.background}
           variation={variation}
@@ -254,190 +274,246 @@ export const SceneStage: React.FC<SceneStageProps> = ({
           unit={unit}
           groundY={groundY}
           cameraShake={cameraShake}
-          zoomPunchActive={zoomPunchActive}
+          zoomPunchActive={isPunchlineMoment}
           colorPalette={renderParams?.colorPalette}
+          bgColors={scene.bgColors}
         />
 
-        {/* 2. Top Chapter Label Badge */}
+        {/* 2. Scene Chapter Badge (Top Safe Area) */}
         {!thumbnailBannerTitle && (
-          <g transform={`translate(${chapterBadge.x}, ${chapterBadge.y})`}>
+          <g id="scene-label-badge">
             <rect
-              x={-chapterBadge.width / 2}
-              y={-chapterBadge.height / 2}
+              x={chapterBadge.box.left}
+              y={chapterBadge.box.top}
               width={chapterBadge.width}
               height={chapterBadge.height}
-              rx={Math.round(18 * u)}
-              fill="#0f172a"
+              rx={Math.round(chapterBadge.height / 2)}
+              fill="rgba(2, 6, 23, 0.82)"
               stroke={variation.wallAccent}
-              strokeWidth={Math.max(4, Math.round(6 * u))}
+              strokeWidth={Math.max(3, Math.round(4 * u))}
+            />
+            <circle
+              cx={chapterBadge.box.left + Math.round(32 * u)}
+              cy={chapterBadge.y}
+              r={Math.round(8 * u)}
+              fill="#f43f5e"
             />
             <text
-              x={0}
-              y={Math.round(chapterBadge.fontSize * 0.34)}
+              x={chapterBadge.x + Math.round(12 * u)}
+              y={chapterBadge.y + Math.round(chapterBadge.fontSize * 0.34)}
               textAnchor="middle"
-              fill={variation.captionHighlight}
+              fill="#f8fafc"
               fontSize={chapterBadge.fontSize}
-              fontWeight="700"
-              fontFamily={BUNDLED_FONT_FAMILY}
-              letterSpacing="1.5"
+              fontWeight="800"
+              fontFamily="JetBrains Mono, monospace"
+              letterSpacing={1.5}
             >
-              {scene.label.toUpperCase()}
+              {scene.label.slice(0, 14).toUpperCase()}
             </text>
           </g>
         )}
 
-        {/* 3. Scene Props */}
+        {/* 3. Interactive Stage Props */}
         {scene.props.map((prop) => {
-          const prPlacement = layout.props.get(prop.id);
-          if (!prPlacement) return null;
+          const pLayout = stageLayout.props.get(prop.id);
+          const px = pLayout ? pLayout.x : Math.round(prop.x * width);
+          const py = pLayout ? pLayout.y : Math.round(prop.y * height);
+          const pScale = pLayout ? pLayout.scale : prop.scale;
+
           return (
             <Prop
               key={prop.id}
+              id={prop.id}
               type={prop.type}
-              x={prPlacement.x}
-              y={prPlacement.y}
-              scale={prPlacement.scale}
+              x={px}
+              y={py}
+              scale={pScale}
               rotation={prop.rotation}
               animation={prop.animation}
               label={prop.label}
               frame={sceneFrame}
               fps={fps}
+              unit={unit}
             />
           );
         })}
 
-        {/* 4. Blob Characters & Clamped Speech Bubbles */}
-        {scene.characters.map((char) => {
-          const placement = layout.characters.get(char.id);
-          if (!placement) return null;
-          const beatOverride = activeBeatsByChar.get(char.id);
-          const emotion = beatOverride?.emotion ?? char.emotion;
-          const animation = beatOverride?.animation ?? char.animation;
-          const bubblePlacement = beatOverride?.bubbleText
-            ? computeBubblePlacement(beatOverride.bubbleText, placement, layout)
-            : null;
+        {/* 4. Plug-in Characters (Blob, Robot, or any registered character) + Speech Bubbles */}
+        {scene.characters.map((char, idx) => {
+          const cLayout = stageLayout.characters.get(char.id);
+          const charDef = getCharacterDefinition(char.type || 'blob') ?? BlobCharacterDef;
+          const CharComponent = charDef.Component;
+          // cLayout.size already includes (unit / 1080) scaling, while CharComponent multiplies by (unit / 1080) * scale
+          const cScale = cLayout ? Number((cLayout.size / (unit / 1080)).toFixed(3)) : char.size;
+          const anchors = charDef.anchors(unit, cScale);
+
+          const beatState = resolveCharacterBeatState(
+            scene,
+            char.id,
+            char.emotion,
+            char.animation,
+            sceneProgress
+          );
+
+          const px =
+            beatState.xOverride !== undefined
+              ? Math.max(
+                  safeArea.left + Math.round(100 * u),
+                  Math.min(safeArea.right - Math.round(100 * u), Math.round(beatState.xOverride * width))
+                )
+              : cLayout
+              ? cLayout.x
+              : Math.round(char.x * width);
+          const py =
+            beatState.yOverride !== undefined
+              ? Math.max(
+                  safeArea.top + Math.round(120 * u),
+                  Math.min(safeArea.bottom - Math.round(120 * u), Math.round(beatState.yOverride * height))
+                )
+              : cLayout
+              ? cLayout.y
+              : Math.round(char.y * height);
+
+          const npHalfW = Math.round(84 * u);
+          const npLeft = Math.max(safeArea.left, Math.min(safeArea.right - npHalfW * 2, px - npHalfW));
+          const npCenterX = npLeft + npHalfW;
+          const npTop = Math.min(
+            safeArea.bottom - Math.round(44 * u),
+            py + anchors.feet.y + Math.round(20 * u)
+          );
+
+          const bubblePlacement =
+            beatState.bubbleText && cLayout
+              ? computeBubblePlacement(
+                  beatState.bubbleText,
+                  { ...cLayout, x: px, y: py },
+                  stageLayout
+                )
+              : undefined;
 
           return (
-            <React.Fragment key={char.id}>
-              <Blob
-                id={char.id}
-                name={char.name}
-                color={char.color}
-                accessory={char.accessory}
-                hoodieColor={char.hoodieColor ?? variation.wallAccent}
-                size={placement.size}
-                x={placement.x}
-                y={placement.y}
-                emotion={emotion}
-                animation={animation}
-                speaking={char.speaking}
-                isVoiceActive={isVoiceActive}
-                flipX={char.flipX}
-                frame={sceneFrame}
-                fps={fps}
-              />
-              {beatOverride?.bubbleText && bubblePlacement && (
+            <g key={char.id}>
+              <g id={`character-${char.id}`} data-char-type={charDef.id} transform={`translate(${px}, ${py})`}>
+                <CharComponent
+                  frame={sceneFrame}
+                  fps={fps}
+                  unit={unit}
+                  emotion={beatState.emotion}
+                  anim={beatState.animation}
+                  speaking={char.speaking}
+                  facing={char.flipX ? 'left' : 'right'}
+                  color={char.color}
+                  accentColor={char.accentColor ?? char.hoodieColor ?? variation.wallAccent}
+                  scale={cScale}
+                  accessory={char.accessory}
+                  seed={idx * 11}
+                  voiceActive={isVoiceActive}
+                />
+              </g>
+
+              {/* Character Nameplate anchored via feet anchor */}
+              <g transform={`translate(${npCenterX}, ${npTop + Math.round(20 * u)})`}>
+                <rect
+                  x={-npHalfW}
+                  y={-Math.round(20 * u)}
+                  width={npHalfW * 2}
+                  height={Math.round(40 * u)}
+                  rx={Math.round(12 * u)}
+                  fill="rgba(2, 6, 23, 0.78)"
+                  stroke="rgba(255, 255, 255, 0.16)"
+                  strokeWidth={Math.max(2, Math.round(2 * u))}
+                />
+                <text
+                  x={0}
+                  y={Math.round(7 * u)}
+                  textAnchor="middle"
+                  fill="#f8fafc"
+                  fontSize={Math.round(23 * u)}
+                  fontWeight="800"
+                  fontFamily="Plus Jakarta Sans, sans-serif"
+                >
+                  {char.name.slice(0, 12)}
+                </text>
+              </g>
+
+              {/* Comic Speech Bubble */}
+              {bubblePlacement && !thumbnailBannerTitle ? (
                 <SpeechBubble
-                  text={beatOverride.bubbleText}
+                  text={beatState.bubbleText!}
                   placement={bubblePlacement}
-                  frame={Math.max(0, sceneFrame - beatOverride.beatFrameStart)}
+                  frame={sceneFrame}
                   fps={fps}
                   unit={unit}
                 />
-              )}
-            </React.Fragment>
+              ) : null}
+            </g>
           );
         })}
 
-        {/* 5. Word-by-word Highlighted Burned-in Captions (Wrapped by Measured Width) */}
-        {!thumbnailBannerTitle && (
-          <Caption
-            words={scene.words}
-            sceneFrame={sceneFrame}
-            layout={layout}
-            highlightColor={variation.captionHighlight}
-            captionStyle={captionStyle}
-            fontFamily={fontFamily}
-          />
-        )}
-
-        {/* 6. Thumbnail Title Poster Overlay */}
-        {thumbnailBannerTitle && (
-          <g transform={`translate(${safeArea.centerX}, ${thumbCenterY})`}>
+        {/* 5. Burned-In Word-by-Word Highlighted Caption OR Thumbnail Hook Banner */}
+        {thumbnailBannerTitle ? (
+          <g id="thumbnail-title-banner">
             <rect
-              x={-thumbW / 2}
-              y={-thumbH / 2}
-              width={thumbW}
-              height={thumbH}
-              rx={Math.round(28 * u)}
-              fill="#0f172a"
+              x={safeArea.left}
+              y={safeArea.top + Math.round(10 * u)}
+              width={safeArea.width}
+              height={Math.round(230 * u)}
+              rx={Math.round(32 * u)}
+              fill="rgba(2, 6, 23, 0.94)"
               stroke={variation.captionHighlight}
-              strokeWidth={Math.max(6, Math.round(10 * u))}
-            />
-            <rect
-              x={-Math.round(150 * u)}
-              y={-thumbH / 2 - Math.round(28 * u)}
-              width={Math.round(300 * u)}
-              height={Math.round(54 * u)}
-              rx={Math.round(16 * u)}
-              fill="#ef4444"
-              stroke="#0f172a"
-              strokeWidth={Math.max(4, Math.round(7 * u))}
+              strokeWidth={Math.round(10 * u)}
             />
             <text
-              x={0}
-              y={-thumbH / 2 + Math.round(8 * u)}
+              x={width / 2}
+              y={safeArea.top + Math.round(92 * u)}
               textAnchor="middle"
-              fill="#ffffff"
-              fontSize={Math.round(28 * u)}
-              fontWeight="800"
-              fontFamily="Bricolage Grotesque, sans-serif"
+              fill={variation.captionHighlight}
+              fontSize={Math.round(38 * u)}
+              fontWeight="900"
+              fontFamily="Plus Jakarta Sans, sans-serif"
+              letterSpacing={2}
             >
               WHAT IF...
             </text>
-            {wrapTitleByMeasuredWidth(
-              thumbnailBannerTitle,
-              thumbW - Math.round(64 * u),
-              Math.round(46 * u)
-            ).map((line, i, arr) => {
-              const lineFontSize = Math.round(46 * u);
-              const lineGap = Math.round(56 * u);
-              const startY = Math.round(12 * u - ((arr.length - 1) * lineGap) / 2);
-              return (
-                <text
-                  key={i}
-                  x={0}
-                  y={startY + i * lineGap}
-                  textAnchor="middle"
-                  fill="#ffffff"
-                  stroke="#0f172a"
-                  strokeWidth={Math.max(5, Math.round(8 * u))}
-                  paintOrder="stroke fill"
-                  fontSize={lineFontSize}
-                  fontWeight="800"
-                  fontFamily="Bricolage Grotesque, sans-serif"
-                >
-                  {line.toUpperCase()}
-                </text>
-              );
-            })}
+            <text
+              x={width / 2}
+              y={safeArea.top + Math.round(156 * u)}
+              textAnchor="middle"
+              fill="#ffffff"
+              fontSize={Math.round(42 * u)}
+              fontWeight="900"
+              fontFamily="Plus Jakarta Sans, sans-serif"
+            >
+              {thumbnailBannerTitle.slice(0, 32).toUpperCase()}
+            </text>
+            {thumbnailBannerTitle.length > 32 && (
+              <text
+                x={width / 2}
+                y={safeArea.top + Math.round(208 * u)}
+                textAnchor="middle"
+                fill="#ffffff"
+                fontSize={Math.round(40 * u)}
+                fontWeight="900"
+                fontFamily="Plus Jakarta Sans, sans-serif"
+              >
+                {thumbnailBannerTitle.slice(32, 64).toUpperCase()}
+              </text>
+            )}
           </g>
-        )}
-
-        {/* 7. Wipe Transition Curtain */}
-        {inTransition && effectiveTransition === 'wipe' && (
-          <rect
-            x={interpolate(transT, [0, 1], [0, width])}
-            y={0}
-            width={width}
-            height={height}
-            fill="#0f172a"
+        ) : (
+          <Caption
+            words={scene.words}
+            sceneFrame={sceneFrame}
+            layout={stageLayout}
+            highlightColor={variation.captionHighlight}
+            captionStyle={captionStyle}
+            fontFamily={renderParams?.fontFamily}
           />
         )}
 
-        {/* 8. Safe Zone Guide Overlay */}
+        {/* Optional Safe-Area Overlay for Developer Inspection */}
         {showSafeZones && (
-          <g opacity={0.85}>
+          <g id="safe-zone-guides" opacity={0.55}>
             <rect
               x={safeArea.left}
               y={safeArea.top}
@@ -445,49 +521,12 @@ export const SceneStage: React.FC<SceneStageProps> = ({
               height={safeArea.height}
               fill="none"
               stroke="#22c55e"
-              strokeWidth={Math.max(3, Math.round(4 * u))}
+              strokeWidth={Math.max(2, Math.round(4 * u))}
               strokeDasharray="16 12"
             />
-            <text
-              x={safeArea.centerX}
-              y={safeArea.bottom - Math.round(16 * u)}
-              textAnchor="middle"
-              fill="#4ade80"
-              fontSize={Math.round(24 * u)}
-              fontWeight="700"
-              fontFamily="JetBrains Mono, monospace"
-            >
-              SAFE AREA ({aspect}: {safeArea.width}x{safeArea.height})
-            </text>
           </g>
         )}
       </g>
     </svg>
   );
 };
-
-function wrapTitleByMeasuredWidth(
-  title: string,
-  maxWidthPx: number,
-  fontSize: number
-): string[] {
-  const words = title
-    .replace(/^what if\s+/i, '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  const lines: string[] = [];
-  let current = '';
-
-  for (const w of words) {
-    const candidate = current ? `${current} ${w}` : w;
-    if (measureTextWidth(candidate.toUpperCase(), fontSize) <= maxWidthPx || !current) {
-      current = candidate;
-    } else {
-      lines.push(current);
-      current = w;
-    }
-  }
-  if (current) lines.push(current);
-  return lines.slice(0, 3);
-}

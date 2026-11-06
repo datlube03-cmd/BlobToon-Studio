@@ -1,121 +1,217 @@
-import 'dotenv/config';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AspectRatio, AspectRatioSchema } from '../aspect';
-import { generateScript } from '../script/generator';
-import { generateTopicIdeas } from '../script/ideas';
+import dotenv from 'dotenv';
+import {
+  ALL_ASPECT_RATIOS,
+  ASPECT_PRESETS,
+  AspectRatio,
+  AspectSelection,
+  parseAspectSelection,
+} from '../aspect';
+import { printDoctorReport } from './doctor';
+import { buildDeterministicScript } from '../script/generator';
+import {
+  createStarterScriptTemplate,
+  loadScriptFromFile,
+} from '../script/parser';
+import { Script, ScriptSchema } from '../script/schema';
 import {
   PALETTE_VARIATIONS,
-  computeTopicSeed,
-  selectVariationBySeed,
   selectVariationForIndex,
+  slugifyTopic,
 } from '../script/variations';
-import { createDefaultTtsProvider } from '../voice/provider';
+import { buildSfxDemoTimeline, probeMediaAudioMetrics } from '../sfx/demo';
+import { listAvailableSkills, loadSkillByName } from '../skills/loader';
+import { SkillDefinition } from '../skills/schema';
 import {
   applyAspectToTimeline,
-  assembleTimelineFromDurations,
   buildTimeline,
 } from '../timeline/builder';
 import { parseTimelineStrict } from '../timeline/schema';
 import {
-  renderTimelineAllAspects,
-  renderTimelineToVideo,
-} from '../render/renderVideo';
-import { createGalleryScript } from '../render/gallery';
-import { Script, ScriptSchema } from '../script/schema';
-import { buildSfxDemoTimeline, probeMediaAudioMetrics } from '../sfx/demo';
-import {
-  SkillDefinition,
-  formatSkillsReport,
-  listAvailableSkills,
-  loadSkillByName,
-} from '../skills/loader';
-import { formatDoctorReport, runDoctorChecks } from './doctor';
+  MockProvider,
+  TtsProvider,
+  VoiceStudioProvider,
+  listVoiceStudioVoices,
+} from '../voice/provider';
+import { createGalleryTimeline } from '../render/gallery';
+import { renderTimelineAllAspects, renderTimelineToVideo } from '../render/renderVideo';
 
-export function parseArgs(argv: string[]) {
+dotenv.config();
+
+export interface CliFlags {
+  positional: string[];
+  mock: boolean;
+  mockTts: boolean;
+  gallery: boolean;
+  voice?: string;
+  speed?: number;
+  outDir?: string;
+  maxDurationSec?: number;
+  aspect?: AspectSelection;
+  skill?: string;
+  sfx: boolean;
+  sfxVolume: number;
+  music?: string;
+}
+
+export function parseCliArgs(argv: string[]): { command: string; flags: CliFlags } {
+  const args = argv.slice(2);
+  const command = args[0] || 'help';
   const positional: string[] = [];
-  const flags: Record<string, string | boolean> = {};
+  let mock = false;
+  let mockTts = false;
+  let gallery = false;
+  let voice: string | undefined;
+  let speed: number | undefined;
+  let outDir: string | undefined;
+  let maxDurationSec: number | undefined;
+  let aspect: AspectSelection | undefined;
+  let skill: string | undefined;
+  let sfx = true;
+  let sfxVolume = 0.35;
+  let music: string | undefined;
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg.startsWith('--')) {
-      const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        flags[key] = next;
-        i++;
-      } else {
-        flags[key] = true;
-      }
-    } else {
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--mock') {
+      mock = true;
+    } else if (arg === '--mock-tts') {
+      mockTts = true;
+    } else if (arg === '--gallery') {
+      gallery = true;
+    } else if (arg === '--voice' && args[i + 1]) {
+      voice = args[++i];
+    } else if (arg.startsWith('--voice=')) {
+      voice = arg.slice('--voice='.length);
+    } else if (arg === '--speed' && args[i + 1]) {
+      speed = Number(args[++i]);
+    } else if (arg.startsWith('--speed=')) {
+      speed = Number(arg.slice('--speed='.length));
+    } else if (arg === '--out' && args[i + 1]) {
+      outDir = args[++i];
+    } else if (arg === '--max-sec' && args[i + 1]) {
+      maxDurationSec = Number(args[++i]);
+    } else if (arg === '--aspect' && args[i + 1]) {
+      aspect = parseAspectSelection(args[++i]);
+    } else if (arg.startsWith('--aspect=')) {
+      aspect = parseAspectSelection(arg.slice('--aspect='.length));
+    } else if (arg === '--skill' && args[i + 1]) {
+      skill = args[++i];
+    } else if (arg.startsWith('--skill=')) {
+      skill = arg.slice('--skill='.length);
+    } else if (arg === '--sfx' && args[i + 1] && !args[i + 1].startsWith('--')) {
+      const val = args[++i].toLowerCase();
+      sfx = val !== 'off' && val !== 'false' && val !== '0';
+    } else if (arg === '--sfx') {
+      sfx = true;
+    } else if (arg.startsWith('--sfx=')) {
+      const val = arg.slice('--sfx='.length).toLowerCase();
+      sfx = val !== 'off' && val !== 'false' && val !== '0';
+    } else if (arg === '--no-sfx') {
+      sfx = false;
+    } else if (arg === '--sfx-volume' && args[i + 1]) {
+      sfxVolume = Math.max(0, Math.min(1, Number(args[++i])));
+    } else if (arg.startsWith('--sfx-volume=')) {
+      sfxVolume = Math.max(0, Math.min(1, Number(arg.slice('--sfx-volume='.length))));
+    } else if (arg === '--music' && args[i + 1] && !args[i + 1].startsWith('--')) {
+      music = args[++i];
+    } else if (arg === '--music') {
+      music = 'quirky';
+    } else if (arg.startsWith('--music=')) {
+      music = arg.slice('--music='.length);
+    } else if (!arg.startsWith('--')) {
       positional.push(arg);
     }
   }
-  return { positional, flags };
-}
 
-export function slugify(input: string): string {
-  return (
-    input
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 42) || 'topic'
-  );
+  return {
+    command,
+    flags: {
+      positional,
+      mock,
+      mockTts,
+      gallery,
+      voice,
+      speed,
+      outDir,
+      maxDurationSec,
+      aspect,
+      skill,
+      sfx,
+      sfxVolume,
+      music,
+    },
+  };
 }
 
 /**
- * Resolves the effective aspect ratio or `'all'` from a CLI `--aspect` flag vs file `aspect`.
- * The CLI flag always overrides the file's aspect when specified.
+ * Resolves the effective aspect selection using precedence:
+ * `--aspect` CLI flag > `aspect` field in JSON/Script > `'9:16'` default.
  */
 export function resolveAspectSelection(
-  flagAspect?: string | boolean,
+  cliFlag?: AspectSelection,
   fileAspect?: AspectRatio
-): { mode: 'single'; aspect: AspectRatio } | { mode: 'all'; aspect: AspectRatio } {
-  if (typeof flagAspect === 'string') {
-    const trimmed = flagAspect.trim().toLowerCase();
-    if (trimmed === 'all') {
-      return { mode: 'all', aspect: fileAspect ?? '9:16' };
-    }
-    const parsed = AspectRatioSchema.safeParse(trimmed);
-    if (!parsed.success) {
-      throw new Error(
-        `Invalid --aspect value "${flagAspect}". Supported values: 9:16, 16:9, 4:3, 3:4, or all.`
-      );
-    }
-    return { mode: 'single', aspect: parsed.data };
+): { mode: 'single' | 'all'; aspect: AspectRatio } {
+  if (cliFlag === 'all') {
+    return { mode: 'all', aspect: fileAspect ?? '9:16' };
+  }
+  if (cliFlag) {
+    return { mode: 'single', aspect: cliFlag };
   }
   return { mode: 'single', aspect: fileAspect ?? '9:16' };
 }
 
+function createTtsProvider(useMock: boolean, voice?: string): TtsProvider {
+  if (useMock) {
+    return new MockProvider({ defaultVoice: voice });
+  }
+  return new VoiceStudioProvider({
+    defaultVoice: voice,
+    fallbackToMock: true,
+  });
+}
+
+function resolveOptionalSkill(skillName?: string): SkillDefinition | undefined {
+  if (!skillName) {
+    return undefined;
+  }
+  return loadSkillByName(skillName);
+}
+
 /**
- * Hardcoded 3-scene Phase 1 starter script for `npm run render` when no path is given.
+ * Phase 1 hardcoded 3-scene script used by `--mock` smoke verification.
  */
 export function createPhase1ThreeSceneScript(aspect: AspectRatio = '9:16'): Script {
   return ScriptSchema.parse({
     aspect,
     topic: 'What if Mom started playing on your Roblox account',
-    title: 'What if Mom played on your Roblox account?',
-    hook: 'Every time you skip a chore, your Mom takes over your main account for an hour.',
-    description: 'Phase 1 three-scene starter Short rendered with Remotion and MockProvider.',
-    hashtags: ['#whatif', '#shorts', '#blobtoon'],
+    title: 'What if Mom Played on Your Gaming Account?',
+    hook: 'Every time you skip a chore, Mom plays on your main gaming account for one full hour.',
+    description:
+      'Phase 1 3-scene vertical cartoon test: THE RULE, DAY 1, and DAY 2 with burned-in captions and procedural 2D blobs.',
+    hashtags: ['#whatif', '#shorts', '#blobtoon', '#animation'],
     scenes: [
       {
-        id: 'scene_hook',
+        id: 'p1_rule',
         label: 'THE RULE',
         narration:
-          'Every time you ignore a chore, your Mom logs into your main gaming account for one full hour.',
-        caption: 'Every time you ignore a chore, your Mom logs into your main account.',
+          'Every time you skip a chore, your Mom plays on your main gaming account for one full hour.',
+        caption:
+          'Every time you skip a chore, your Mom plays on your main gaming account for one full hour.',
         background: 'room',
         transition: 'zoom',
         characters: [
           {
             id: 'you',
             name: 'You',
+            type: 'blob',
             color: '#38bdf8',
             accessory: 'headphones',
+            hoodieColor: '#6366f1',
             size: 1.0,
-            x: 0.31,
+            x: 0.32,
             y: 0.62,
             emotion: 'shock',
             animation: 'scale-pop',
@@ -125,10 +221,12 @@ export function createPhase1ThreeSceneScript(aspect: AspectRatio = '9:16'): Scri
           {
             id: 'mom',
             name: 'Mom',
+            type: 'blob',
             color: '#f472b6',
             accessory: 'glasses',
-            size: 1.05,
-            x: 0.69,
+            hoodieColor: '#f59e0b',
+            size: 1.06,
+            x: 0.68,
             y: 0.62,
             emotion: 'smug',
             animation: 'slide-in',
@@ -138,36 +236,45 @@ export function createPhase1ThreeSceneScript(aspect: AspectRatio = '9:16'): Scri
         ],
         props: [
           {
-            id: 'prop_ctrl',
+            id: 'p1_prop_1',
             type: 'controller',
             x: 0.5,
             y: 0.45,
             scale: 1.15,
             rotation: -10,
             animation: 'bounce',
-            label: 'MOM ONLINE',
+            label: '1 HR PENALTY',
           },
         ],
         beats: [
-          { atProgress: 0.2, targetId: 'you', emotion: 'shock', bubbleText: 'MY ACCOUNT?!' },
+          {
+            atProgress: 0.2,
+            targetId: 'you',
+            emotion: 'shock',
+            animation: 'jump',
+            bubbleText: 'MY ACCOUNT?!',
+          },
         ],
       },
       {
-        id: 'scene_day1',
+        id: 'p1_day1',
         label: 'DAY 1',
         narration:
-          'On Day One, she mashes random buttons and somehow beats the hardest boss in the game.',
-        caption: 'On Day One, she mashes random buttons and beats the hardest boss!',
+          'On Day One, she mashes random buttons and somehow defeats the dragon boss you were stuck on.',
+        caption:
+          'On Day One, she mashes random buttons and somehow defeats the dragon boss you were stuck on.',
         background: 'arcade',
         transition: 'wipe',
         characters: [
           {
             id: 'you',
             name: 'You',
+            type: 'blob',
             color: '#38bdf8',
             accessory: 'headphones',
-            size: 0.98,
-            x: 0.31,
+            hoodieColor: '#6366f1',
+            size: 1.0,
+            x: 0.3,
             y: 0.62,
             emotion: 'happy',
             animation: 'bounce',
@@ -177,611 +284,619 @@ export function createPhase1ThreeSceneScript(aspect: AspectRatio = '9:16'): Scri
           {
             id: 'mom',
             name: 'Mom',
+            type: 'blob',
             color: '#f472b6',
-            accessory: 'crown',
+            accessory: 'glasses',
+            hoodieColor: '#f59e0b',
             size: 1.08,
-            x: 0.69,
+            x: 0.7,
             y: 0.62,
             emotion: 'laughing',
-            animation: 'jump',
+            animation: 'squash-and-stretch',
             speaking: true,
             flipX: true,
           },
         ],
         props: [
           {
-            id: 'prop_trophy',
+            id: 'p1_prop_2',
             type: 'trophy',
             x: 0.5,
-            y: 0.44,
-            scale: 1.15,
-            rotation: 6,
+            y: 0.45,
+            scale: 1.1,
+            rotation: 8,
             animation: 'spin',
-            label: 'BOSS DEFEATED',
+            label: 'BOSS CLEARED!',
           },
         ],
         beats: [
-          { atProgress: 0.3, targetId: 'mom', emotion: 'laughing', bubbleText: 'TOO EASY!' },
+          {
+            atProgress: 0.35,
+            targetId: 'mom',
+            emotion: 'laughing',
+            bubbleText: 'TOO EASY!',
+          },
         ],
       },
       {
-        id: 'scene_day3',
-        label: 'DAY 3',
+        id: 'p1_day2',
+        label: 'DAY 2',
         narration:
-          'By Day Three, your friends vote her as the new clan leader and kick you out until you vacuum.',
-        caption: 'By Day Three, your friends vote her as clan leader and kick you out!',
+          'By Day Two, she trades your legendary sword for a pink gardening hat and locks you out.',
+        caption:
+          'By Day Two, she trades your legendary sword for a pink gardening hat and locks you out.',
         background: 'kitchen',
         transition: 'slide',
         characters: [
           {
             id: 'you',
             name: 'You',
+            type: 'blob',
             color: '#38bdf8',
             accessory: 'hoodie',
-            size: 0.96,
-            x: 0.3,
+            hoodieColor: '#6366f1',
+            size: 0.98,
+            x: 0.32,
             y: 0.62,
-            emotion: 'sad',
+            emotion: 'angry',
             animation: 'shake',
-            speaking: false,
+            speaking: true,
             flipX: false,
           },
           {
             id: 'mom',
             name: 'Mom',
+            type: 'blob',
             color: '#f472b6',
             accessory: 'crown',
-            size: 1.12,
-            x: 0.7,
+            hoodieColor: '#f59e0b',
+            size: 1.1,
+            x: 0.68,
             y: 0.62,
             emotion: 'smug',
-            animation: 'bounce',
-            speaking: true,
+            animation: 'walk',
+            speaking: false,
             flipX: true,
           },
         ],
         props: [
           {
-            id: 'prop_door',
+            id: 'p1_prop_3',
             type: 'door',
             x: 0.5,
             y: 0.45,
-            scale: 1.08,
+            scale: 1.05,
             rotation: 0,
             animation: 'scale-pop',
-            label: 'GO VACUUM!',
+            label: 'LOCKED OUT',
           },
         ],
         beats: [
-          { atProgress: 0.25, targetId: 'mom', emotion: 'smug', bubbleText: 'CHORES FIRST!' },
+          {
+            atProgress: 0.25,
+            targetId: 'you',
+            emotion: 'angry',
+            bubbleText: 'MY SWORD?!',
+          },
         ],
       },
     ],
   });
 }
 
-async function runCli() {
-  const [command = 'help', ...rest] = process.argv.slice(2);
-  const { positional, flags } = parseArgs(rest);
-
-  const baseOutDir =
-    typeof flags.out === 'string' ? path.resolve(flags.out) : path.resolve(process.cwd(), 'out');
-  const voice =
-    typeof flags.voice === 'string' ? flags.voice : process.env.VOICESTUDIO_VOICE || 'alloy';
-  const maxDurationSec =
-    typeof flags.duration === 'string' ? parseFloat(flags.duration) : undefined;
-
-  const sfxFlag: boolean | undefined = (() => {
-    if (flags.sfx === undefined) return undefined;
-    if (typeof flags.sfx === 'boolean') return flags.sfx;
-    const val = String(flags.sfx).trim().toLowerCase();
-    if (val === 'on' || val === 'true' || val === '1') return true;
-    if (val === 'off' || val === 'false' || val === '0') return false;
-    throw new Error(`Invalid --sfx value "${flags.sfx}". Expected --sfx on or --sfx off.`);
-  })();
-
-  const sfxVolumeFlag: number | undefined = (() => {
-    const raw = flags['sfx-volume'];
-    if (raw === undefined) return undefined;
-    const num = Number(raw);
-    if (!Number.isFinite(num) || num < 0 || num > 1) {
-      throw new Error(`Invalid --sfx-volume value "${raw}". Expected a number between 0 and 1.`);
-    }
-    return num;
-  })();
-
-  const musicPathFlag: string | undefined =
-    typeof flags.music === 'string' && flags.music.trim()
-      ? path.resolve(flags.music.trim())
-      : undefined;
-
-  const musicVolumeFlag: number | undefined = (() => {
-    const raw = flags['music-volume'];
-    if (raw === undefined) return undefined;
-    const num = Number(raw);
-    if (!Number.isFinite(num) || num < 0 || num > 1) {
-      throw new Error(`Invalid --music-volume value "${raw}". Expected a number between 0 and 1.`);
-    }
-    return num;
-  })();
-
-  const cliAudioOverrides = {
-    ...(sfxFlag !== undefined ? { sfx: sfxFlag } : {}),
-    ...(sfxVolumeFlag !== undefined ? { sfxVolume: sfxVolumeFlag } : {}),
-    ...(musicPathFlag
-      ? { music: { path: musicPathFlag, volume: musicVolumeFlag ?? 0.15 } }
-      : {}),
-  };
-
-  const activeSkill: SkillDefinition | undefined = (() => {
-    if (flags.skill === undefined) return undefined;
-    if (typeof flags.skill !== 'string' || !flags.skill.trim()) {
-      throw new Error(
-        'Missing skill name after --skill flag. Example: npm run make -- "topic" --skill example-fastcut'
-      );
-    }
-    return loadSkillByName(flags.skill);
-  })();
-
-  if (command === 'sfx:demo') {
-    const aspectSel = resolveAspectSelection(flags.aspect, '9:16');
-    const demoOutDir =
-      typeof flags.out === 'string'
-        ? path.resolve(flags.out)
-        : path.join(baseOutDir, 'sfx-demo');
-    fs.mkdirSync(demoOutDir, { recursive: true });
-    console.log(
-      `[BlobToon SFX Demo] Building 11-scene procedural SFX showcase (${aspectSel.aspect}) into ${demoOutDir}...`
-    );
-    const demoTimeline = buildSfxDemoTimeline(aspectSel.aspect);
-    const res = await renderTimelineToVideo(demoTimeline, {
-      outDir: demoOutDir,
-      aspect: aspectSel.aspect,
-      sfx: true,
-      sfxVolume: sfxVolumeFlag ?? 0.65,
-      musicPath: musicPathFlag,
-      musicVolume: musicVolumeFlag,
-      onProgress: (pct, stage) => console.log(`[BlobToon SFX Demo] ${pct}% - ${stage}`),
-    });
-    const probe = await probeMediaAudioMetrics(res.videoPath);
-    console.log(`[BlobToon SFX Demo] Complete!`);
-    console.log(`  MP4 Video    : ${res.videoPath} (${res.width}x${res.height}, ${res.durationSec}s)`);
-    console.log(`  Thumbnail    : ${res.thumbnailPath}`);
-    console.log(`  Audio Stream : ${probe.audioCodec} (RMS=${probe.rms}, peak=${probe.peak}, diff=${probe.durationDiffMs}ms)`);
-    return;
-  }
-
-  if (command === 'skills') {
-    const entries = listAvailableSkills();
-    console.log(formatSkillsReport(entries));
-    if (entries.some((e) => !e.valid)) {
-      process.exit(1);
-    }
-    return;
-  }
-
-  if (command === 'doctor') {
-    const { healthy, checks } = await runDoctorChecks();
-    console.log(formatDoctorReport(checks, healthy));
-    if (!healthy) process.exit(1);
-    return;
-  }
-
-  if (command === 'ideas') {
-    const niche = positional[0] || 'gaming & school rules';
-    const count = typeof flags.count === 'string' ? parseInt(flags.count, 10) : 10;
-    console.log(`[BlobToon Ideas] Generating ${count} ranked topic ideas for niche: "${niche}"...`);
-    const { ideas, source } = await generateTopicIdeas(niche, count);
-    fs.mkdirSync(baseOutDir, { recursive: true });
-    const ideasPath = path.join(baseOutDir, 'ideas.json');
-    fs.writeFileSync(ideasPath, JSON.stringify(ideas, null, 2), 'utf-8');
-
-    console.log(`\nTop ${ideas.length} Topic Ideas (source=${source}):`);
-    for (const item of ideas) {
-      console.log(
-        `  #${String(item.rank).padStart(2, '0')} [Hook ${item.hookScore}/100] ${item.topic}`
-      );
-      console.log(`      Why it hooks: ${item.reason}`);
-    }
-    console.log(`\nSaved ideas JSON to ${ideasPath}`);
-    return;
-  }
-
-  if (command === 'script') {
-    const topic = positional[0] || 'What if Mom started playing on your Roblox account';
-    const aspectSel = resolveAspectSelection(flags.aspect, '9:16');
-    console.log(
-      `[BlobToon CLI] Generating script for topic: "${topic}" (aspect=${aspectSel.aspect}${
-        activeSkill ? `, skill=${activeSkill.name}` : ''
-      })...`
-    );
-    const { script, source, attempts } = await generateScript(topic, {
-      aspect: aspectSel.aspect,
-      skill: activeSkill,
-    });
-    const slugDir = path.join(baseOutDir, slugify(topic));
-    fs.mkdirSync(slugDir, { recursive: true });
-    const slugScriptPath = path.join(slugDir, 'script.json');
-    const rootScriptPath = path.join(baseOutDir, 'script.json');
-    fs.writeFileSync(slugScriptPath, JSON.stringify(script, null, 2), 'utf-8');
-    fs.writeFileSync(rootScriptPath, JSON.stringify(script, null, 2), 'utf-8');
-    console.log(
-      `[BlobToon CLI] Script saved to ${slugScriptPath} (source=${source}, attempts=${attempts})`
-    );
-    return;
-  }
-
-  if (command === 'render') {
-    const isGallery = Boolean(flags.gallery);
-    const inputPath = positional[0];
-    const tts = createDefaultTtsProvider();
-
-    let timeline;
-    let providerUsed = 'mock';
-
-    if (isGallery) {
-      console.log(
-        '[BlobToon CLI] Building Phase 2 Gallery Timeline (all emotions, props, backgrounds)...'
-      );
-      const galleryScript = createGalleryScript('9:16');
-      const built = await buildTimeline(galleryScript, tts, {
-        voice,
-        variation: PALETTE_VARIATIONS[0],
-      });
-      timeline = built.timeline;
-      providerUsed = built.providerUsed;
-    } else if (inputPath) {
-      const resolved = path.resolve(inputPath);
-      if (!fs.existsSync(resolved)) {
-        throw new Error(`Timeline file not found at path: ${resolved}`);
-      }
-      console.log(`[BlobToon CLI] Loading timeline from ${resolved}...`);
-      const raw = JSON.parse(fs.readFileSync(resolved, 'utf-8'));
-      timeline = parseTimelineStrict(raw);
-    } else {
-      console.log(
-        '[BlobToon CLI] No timeline path provided; building default 3-scene starter timeline...'
-      );
-      const starterScript = createPhase1ThreeSceneScript('9:16');
-      const built = await buildTimeline(starterScript, tts, {
-        voice,
-        variation: PALETTE_VARIATIONS[0],
-      });
-      timeline = built.timeline;
-      providerUsed = built.providerUsed;
-    }
-
-    const aspectSel = resolveAspectSelection(flags.aspect, timeline.aspect);
-
-    if (aspectSel.mode === 'all') {
-      console.log(
-        `[BlobToon Render] Rendering all 4 aspect ratios (9:16, 16:9, 4:3, 3:4) into ${baseOutDir}...`
-      );
-      const results = await renderTimelineAllAspects(timeline, {
-        outDir: baseOutDir,
-        sfx: sfxFlag,
-        sfxVolume: sfxVolumeFlag,
-        musicPath: musicPathFlag,
-        musicVolume: musicVolumeFlag,
-        maxDurationSec,
-        voiceProviderName: providerUsed,
-        onProgress: (pct, stage) => console.log(`[BlobToon Render] ${pct}% - ${stage}`),
-      });
-      console.log(`[BlobToon CLI] Rendered all ${results.length} aspect ratios:`);
-      for (const r of results) {
-        console.log(
-          `  [${r.aspect}] ${r.videoPath} (${r.width}x${r.height}) | Thumbnail: ${r.thumbnailPath}`
-        );
-      }
-      return;
-    }
-
-    timeline = applyAspectToTimeline(timeline, aspectSel.aspect);
-    const result = await renderTimelineToVideo(timeline, {
-      outDir: baseOutDir,
-      aspect: aspectSel.aspect,
-      sfx: sfxFlag,
-      sfxVolume: sfxVolumeFlag,
-      musicPath: musicPathFlag,
-      musicVolume: musicVolumeFlag,
-      maxDurationSec,
-      voiceProviderName: providerUsed,
-      onProgress: (pct, stage) => console.log(`[BlobToon Render] ${pct}% - ${stage}`),
-    });
-
-    console.log(`[BlobToon CLI] Render complete (${result.aspect})!`);
-    console.log(
-      `  MP4 Video : ${result.videoPath} (${result.width}x${result.height}, ${result.fps}fps, ${result.durationSec}s)`
-    );
-    console.log(`  Thumbnail : ${result.thumbnailPath}`);
-    console.log(`  Metadata  : ${result.metaPath}`);
-    console.log(`  Timeline  : ${result.timelinePath}`);
-    return;
-  }
-
-  if (command === 'make') {
-    const topic = positional[0] || 'What if Mom started playing on your Roblox account';
-    const aspectSel = resolveAspectSelection(flags.aspect, '9:16');
-    const slug = slugify(topic);
-    const slugOutDir = path.join(baseOutDir, slug);
-    fs.mkdirSync(slugOutDir, { recursive: true });
-
-    const seed =
-      typeof flags.seed === 'string' ? parseInt(flags.seed, 10) : computeTopicSeed(topic);
-    const variation =
-      typeof flags.variation === 'string'
-        ? selectVariationForIndex(parseInt(flags.variation, 10))
-        : selectVariationBySeed(seed);
-
-    console.log(
-      `[BlobToon Make] Starting pipeline for: "${topic}" (aspect=${
-        aspectSel.mode === 'all' ? 'all' : aspectSel.aspect
-      }, seed=${seed}${activeSkill ? `, skill=${activeSkill.name}` : ''})`
-    );
-    if (activeSkill) {
-      console.log(
-        `[BlobToon Skill] Loaded "${activeSkill.name}" from ${activeSkill.fileName} — Render Params: ${JSON.stringify(
-          activeSkill.renderParams ?? {}
-        )}`
-      );
-    }
-
-    // Resumability: if script.json already exists in out/<slug>/ with matching skill and --force is not set, reuse it!
-    const savedScriptPath = path.join(slugOutDir, 'script.json');
-    let script: Script;
-    let source = 'cached-script';
-
-    let reusedCached = false;
-    if (fs.existsSync(savedScriptPath) && !flags.force) {
-      try {
-        const cachedRaw = JSON.parse(fs.readFileSync(savedScriptPath, 'utf-8'));
-        const parsedCached = ScriptSchema.parse(cachedRaw);
-        if ((parsedCached.skill ?? undefined) === (activeSkill?.name ?? undefined)) {
-          script = parsedCached;
-          reusedCached = true;
-          console.log(
-            `[BlobToon Make] 1/4 Reusing existing script from ${savedScriptPath} (resumable run)`
-          );
-        } else {
-          const gen = await generateScript(topic, {
-            variation,
-            aspect: aspectSel.aspect,
-            skill: activeSkill,
-          });
-          script = gen.script;
-          source = gen.source;
-        }
-      } catch {
-        const gen = await generateScript(topic, {
-          variation,
-          aspect: aspectSel.aspect,
-          skill: activeSkill,
-        });
-        script = gen.script;
-        source = gen.source;
-      }
-    } else {
-      const gen = await generateScript(topic, {
-        variation,
-        aspect: aspectSel.aspect,
-        skill: activeSkill,
-      });
-      script = gen.script;
-      source = gen.source;
-    }
-
-    if (!reusedCached) {
-      fs.writeFileSync(savedScriptPath, JSON.stringify(script!, null, 2), 'utf-8');
-    }
-    fs.writeFileSync(path.join(baseOutDir, 'script.json'), JSON.stringify(script!, null, 2), 'utf-8');
-    console.log(
-      `[BlobToon Make] 1/4 Script ready (${source}, ${script!.scenes.length} scenes${
-        activeSkill ? `, skill=${activeSkill.name}` : ''
-      })`
-    );
-
-    const tts = createDefaultTtsProvider();
-    const { timeline, providerUsed } = await buildTimeline(script!, tts, {
-      aspect: aspectSel.aspect,
-      seed,
-      skill: activeSkill?.name,
-      renderParams: activeSkill?.renderParams,
-      audio: cliAudioOverrides,
-      voice,
-      variation,
-    });
-    console.log(
-      `[BlobToon Make] 2/4 Voice & Timeline built (${providerUsed}, ${timeline.totalDurationSec}s, ${timeline.totalFrames} frames)`
-    );
-
-    if (aspectSel.mode === 'all') {
-      const results = await renderTimelineAllAspects(timeline, {
-        outDir: slugOutDir,
-        sfx: sfxFlag,
-        sfxVolume: sfxVolumeFlag,
-        musicPath: musicPathFlag,
-        musicVolume: musicVolumeFlag,
-        maxDurationSec,
-        voiceProviderName: providerUsed,
-        onProgress: (pct, stage) => console.log(`[BlobToon Make] 3/4 ${pct}% - ${stage}`),
-      });
-      // Mirror primary outputs to baseOutDir as well
-      for (const r of results) {
-        fs.copyFileSync(r.videoPath, path.join(baseOutDir, path.basename(r.videoPath)));
-      }
-      fs.copyFileSync(results[0].videoPath, path.join(baseOutDir, 'video.mp4'));
-      fs.copyFileSync(results[0].thumbnailPath, path.join(baseOutDir, 'thumbnail.png'));
-      fs.copyFileSync(results[0].metaPath, path.join(baseOutDir, 'meta.json'));
-      fs.copyFileSync(results[0].timelinePath, path.join(baseOutDir, 'timeline.json'));
-      console.log(`[BlobToon Make] 4/4 Pipeline complete (all 4 aspect ratios) in ${slugOutDir}`);
-      return;
-    }
-
-    const result = await renderTimelineToVideo(timeline, {
-      outDir: slugOutDir,
-      aspect: aspectSel.aspect,
-      sfx: sfxFlag,
-      sfxVolume: sfxVolumeFlag,
-      musicPath: musicPathFlag,
-      musicVolume: musicVolumeFlag,
-      maxDurationSec,
-      voiceProviderName: providerUsed,
-      onProgress: (pct, stage) => console.log(`[BlobToon Make] 3/4 ${pct}% - ${stage}`),
-    });
-
-    // Also mirror to baseOutDir root so both `out/<slug>/*` and `out/video.mp4` exist
-    if (path.resolve(slugOutDir) !== path.resolve(baseOutDir)) {
-      fs.copyFileSync(result.videoPath, path.join(baseOutDir, 'video.mp4'));
-      fs.copyFileSync(result.thumbnailPath, path.join(baseOutDir, 'thumbnail.png'));
-      fs.copyFileSync(result.metaPath, path.join(baseOutDir, 'meta.json'));
-      fs.copyFileSync(result.timelinePath, path.join(baseOutDir, 'timeline.json'));
-    }
-
-    console.log(`[BlobToon Make] 4/4 Pipeline complete!`);
-    console.log(`  Folder    : ${slugOutDir}`);
-    console.log(`  MP4 Video : ${result.videoPath} (${result.width}x${result.height})`);
-    console.log(`  Thumbnail : ${result.thumbnailPath}`);
-    console.log(`  Audio Dir : ${result.audioDir}`);
-    console.log(`  Metadata  : ${result.metaPath}`);
-    return;
-  }
-
-  if (command === 'batch') {
-    const topicsFile = positional[0] || 'topics.txt';
-    const resolvedTopicsPath = path.resolve(topicsFile);
-    if (!fs.existsSync(resolvedTopicsPath)) {
-      throw new Error(`Topics file not found: ${resolvedTopicsPath}`);
-    }
-
-    const lines = fs
-      .readFileSync(resolvedTopicsPath, 'utf-8')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('#'));
-
-    const aspectSel = resolveAspectSelection(flags.aspect, '9:16');
-    console.log(
-      `[BlobToon Batch] Processing ${lines.length} topics from ${resolvedTopicsPath} (aspect=${
-        aspectSel.mode === 'all' ? 'all' : aspectSel.aspect
-      })...`
-    );
-    const tts = createDefaultTtsProvider();
-    const batchSummary: Array<{
-      index: number;
-      topic: string;
-      aspect: string;
-      seed: number;
-      variation: string;
-      outDir: string;
-      videoPath: string;
-      thumbnailPath: string;
-      durationSec: number;
-    }> = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const topic = lines[i];
-      const seed = computeTopicSeed(topic, i);
-      const variation = selectVariationForIndex(i);
-      const itemOutDir = path.join(baseOutDir, slugify(topic));
-      fs.mkdirSync(itemOutDir, { recursive: true });
-
-      console.log(
-        `\n[BlobToon Batch] (${i + 1}/${lines.length}) Topic: "${topic}" | Palette: ${variation.name} | Seed: ${seed}`
-      );
-
-      const savedScriptPath = path.join(itemOutDir, 'script.json');
-      let script: Script;
-      if (fs.existsSync(savedScriptPath) && !flags.force) {
-        script = ScriptSchema.parse(JSON.parse(fs.readFileSync(savedScriptPath, 'utf-8')));
-      } else {
-        const gen = await generateScript(topic, { variation, aspect: aspectSel.aspect });
-        script = gen.script;
-        fs.writeFileSync(savedScriptPath, JSON.stringify(script, null, 2), 'utf-8');
-      }
-
-      const { timeline, providerUsed } = await buildTimeline(script, tts, {
-        aspect: aspectSel.aspect,
-        seed,
-        skill: activeSkill?.name,
-        renderParams: activeSkill?.renderParams,
-        audio: cliAudioOverrides,
-        voice,
-        variation,
-      });
-
-      if (aspectSel.mode === 'all') {
-        const allRes = await renderTimelineAllAspects(timeline, {
-          outDir: itemOutDir,
-          sfx: sfxFlag,
-          sfxVolume: sfxVolumeFlag,
-          musicPath: musicPathFlag,
-          musicVolume: musicVolumeFlag,
-          maxDurationSec,
-          voiceProviderName: providerUsed,
-        });
-        batchSummary.push({
-          index: i + 1,
-          topic,
-          aspect: 'all',
-          seed,
-          variation: variation.name,
-          outDir: itemOutDir,
-          videoPath: allRes[0].videoPath,
-          thumbnailPath: allRes[0].thumbnailPath,
-          durationSec: allRes[0].durationSec,
-        });
-      } else {
-        const res = await renderTimelineToVideo(timeline, {
-          outDir: itemOutDir,
-          aspect: aspectSel.aspect,
-          sfx: sfxFlag,
-          sfxVolume: sfxVolumeFlag,
-          musicPath: musicPathFlag,
-          musicVolume: musicVolumeFlag,
-          maxDurationSec,
-          voiceProviderName: providerUsed,
-        });
-        batchSummary.push({
-          index: i + 1,
-          topic,
-          aspect: aspectSel.aspect,
-          seed,
-          variation: variation.name,
-          outDir: itemOutDir,
-          videoPath: res.videoPath,
-          thumbnailPath: res.thumbnailPath,
-          durationSec: res.durationSec,
-        });
-      }
-    }
-
-    fs.mkdirSync(baseOutDir, { recursive: true });
-    const summaryPath = path.join(baseOutDir, 'batch-summary.json');
-    fs.writeFileSync(summaryPath, JSON.stringify(batchSummary, null, 2), 'utf-8');
-    console.log(
-      `\n[BlobToon Batch] Completed ${batchSummary.length} videos! Summary saved to ${summaryPath}`
-    );
-    return;
-  }
-
-  console.log(`BlobToon CLI
-Usage:
-  npm run make -- "topic" [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35] [--music <file>] [--music-volume 0.15]
-  npm run skills
-  npm run sfx:demo
-  npm run script -- "topic" [--skill <name>] [--aspect 9:16|16:9|4:3|3:4] [--out out/]
-  npm run render -- [path/to/timeline.json] [--gallery] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35] [--music <file>]
-  npm run batch -- topics.txt [--skill <name>] [--aspect 9:16|16:9|4:3|3:4|all] [--sfx on|off] [--sfx-volume 0.35]
-  npm run ideas -- "niche" [--count 10]
-  npm run doctor
-  npm run preview`);
+function logRenderSummary(
+  res: Awaited<ReturnType<typeof renderTimelineToVideo>>,
+  providerUsed: string
+) {
+  console.log(`\n[BlobToon] Render Complete (${res.aspect} / ${res.width}x${res.height}):`);
+  console.log(`  - Video MP4:     ${res.videoPath}`);
+  console.log(`  - Thumbnail PNG: ${res.thumbnailPath}`);
+  console.log(`  - Timeline JSON: ${res.timelinePath}`);
+  console.log(`  - Meta JSON:     ${res.metaPath}`);
+  console.log(
+    `  - Specs:         ${res.width}x${res.height} @ ${res.fps}fps (${res.durationSec}s, ${res.totalFrames} frames, TTS: ${providerUsed})\n`
+  );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  runCli().catch((err) => {
-    console.error('[BlobToon CLI Error]', err instanceof Error ? err.message : err);
+/**
+ * Resolves a list of script files from a single file path, directory path, or simple glob.
+ */
+export function resolveScriptFilesInput(targetInput: string): string[] {
+  const cwd = process.cwd();
+  const directPath = path.resolve(cwd, targetInput);
+
+  if (fs.existsSync(directPath)) {
+    const stat = fs.statSync(directPath);
+    if (stat.isFile()) {
+      return [directPath];
+    }
+    if (stat.isDirectory()) {
+      const entries = fs.readdirSync(directPath, { withFileTypes: true });
+      const results: string[] = [];
+      for (const e of entries) {
+        const full = path.join(directPath, e.name);
+        if (e.isFile() && (e.name.endsWith('.script.txt') || e.name.endsWith('.script.json') || e.name === 'script.txt' || e.name === 'script.json')) {
+          results.push(full);
+        } else if (e.isDirectory()) {
+          const nestedTxt = path.join(full, 'script.txt');
+          const nestedJson = path.join(full, 'script.json');
+          if (fs.existsSync(nestedTxt)) results.push(nestedTxt);
+          else if (fs.existsSync(nestedJson)) results.push(nestedJson);
+        }
+      }
+      return results.sort();
+    }
+  }
+
+  // Simple wildcard glob handling (e.g. `examples/*.script.txt` or `projects/*/script.txt`)
+  if (targetInput.includes('*')) {
+    const parts = targetInput.split(/[\\/]/);
+    const baseDir = parts[0] === '*' ? cwd : path.resolve(cwd, parts[0]);
+    if (!fs.existsSync(baseDir)) {
+      return [];
+    }
+    const regexStr =
+      '^' +
+      targetInput
+        .replace(/\\/g, '/')
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '[^/]*') +
+      '$';
+    const matcher = new RegExp(regexStr);
+    const matched: string[] = [];
+
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        const rel = path.relative(cwd, full).replace(/\\/g, '/');
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (matcher.test(rel)) {
+          matched.push(full);
+        }
+      }
+    };
+    walk(baseDir);
+    return matched.sort();
+  }
+
+  return [];
+}
+
+async function renderLoadedScript(
+  script: Script,
+  flags: CliFlags,
+  outDir: string
+): Promise<void> {
+  const skillDef = resolveOptionalSkill(flags.skill ?? script.skill);
+  const resolved = resolveAspectSelection(flags.aspect, script.aspect);
+  const useMock = flags.mock || flags.mockTts;
+  const tts = createTtsProvider(useMock, flags.voice);
+
+  const { timeline, providerUsed } = await buildTimeline(script, tts, {
+    aspect: resolved.aspect,
+    voice: flags.voice,
+    skill: skillDef?.name ?? script.skill,
+    renderParams: skillDef?.renderParams ?? script.renderParams,
+    audio: {
+      sfx: flags.sfx,
+      sfxVolume: flags.sfxVolume,
+      music: flags.music,
+    },
+    variation: PALETTE_VARIATIONS[0],
+  });
+
+  if (resolved.mode === 'all') {
+    const results = await renderTimelineAllAspects(timeline, {
+      outDir,
+      maxDurationSec: flags.maxDurationSec,
+      voiceProviderName: providerUsed,
+      sfx: flags.sfx,
+      sfxVolume: flags.sfxVolume,
+      musicPath: flags.music,
+    });
+    for (const r of results) {
+      logRenderSummary(r, providerUsed);
+    }
+  } else {
+    const res = await renderTimelineToVideo(timeline, {
+      outDir,
+      aspect: resolved.aspect,
+      maxDurationSec: flags.maxDurationSec,
+      voiceProviderName: providerUsed,
+      sfx: flags.sfx,
+      sfxVolume: flags.sfxVolume,
+      musicPath: flags.music,
+    });
+    logRenderSummary(res, providerUsed);
+  }
+}
+
+export async function runCli(argv = process.argv): Promise<void> {
+  const { command, flags } = parseCliArgs(argv);
+
+  switch (command) {
+    case 'doctor': {
+      const ok = await printDoctorReport();
+      if (!ok) process.exitCode = 1;
+      return;
+    }
+
+    case 'skills': {
+      const skills = listAvailableSkills();
+      console.log(`\n=== Available BlobToon Skills (skills/*.md) ===\n`);
+      if (skills.length === 0) {
+        console.log('  (No skill files found in skills/ directory)\n');
+        return;
+      }
+      for (const s of skills) {
+        if (s.valid && s.skill) {
+          console.log(`  - ${s.skill.name.padEnd(20)} ${s.skill.description} (${s.fileName})`);
+        } else {
+          console.log(`  - [INVALID] ${s.fileName}: ${s.error}`);
+        }
+      }
+      console.log(`\nUsage: npm run make -- examples/demo.script.txt --skill <name>\n`);
+      return;
+    }
+
+    case 'voices': {
+      const report = await listVoiceStudioVoices();
+      console.log('\n=== BlobToon VoiceStudio Voices ===\n');
+      console.log(`${report.message}\n`);
+      if (report.voices.length > 0) {
+        console.log('Voice ID             Name                 Notes');
+        console.log('-------------------- -------------------- ----------------------------------------');
+        for (const v of report.voices) {
+          console.log(
+            `${v.id.padEnd(20)} ${v.name.padEnd(20)} ${v.description ?? ''}`
+          );
+        }
+        console.log('');
+      }
+      return;
+    }
+
+    case 'say': {
+      const text = flags.positional.join(' ').trim();
+      if (!text) {
+        console.error(
+          'Usage: npm run say -- "some text" --voice "Voice A" [--speed 1.0] [--mock-tts]'
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const voiceName = flags.voice || process.env.VOICESTUDIO_VOICE || 'alloy';
+      const speedVal = flags.speed ?? 1.0;
+      const tts = createTtsProvider(flags.mock || flags.mockTts, voiceName);
+      const res = await tts.synthesize(text, voiceName, speedVal);
+      const outDir = path.resolve(process.cwd(), flags.outDir || 'out');
+      fs.mkdirSync(outDir, { recursive: true });
+      const safeVoice = voiceName.toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
+      const auditionPath = path.join(outDir, `say_${safeVoice}.wav`);
+      fs.copyFileSync(res.file, auditionPath);
+
+      console.log(`\n[BlobToon Say] Synthesized voice audition:`);
+      console.log(`  - Voice:    ${voiceName}`);
+      console.log(`  - Speed:    ${speedVal}x`);
+      console.log(`  - Provider: ${res.provider} (cached: ${res.cached})`);
+      console.log(`  - Duration: ${res.durationSec}s`);
+      console.log(`  - WAV File: ${auditionPath}\n`);
+      return;
+    }
+
+    case 'new': {
+      const rawTitle = flags.positional.join(' ').trim();
+      if (!rawTitle) {
+        console.error('Usage: npm run new -- "<title>"');
+        process.exitCode = 1;
+        return;
+      }
+      const slug = slugifyTopic(rawTitle);
+      const projectDir = path.resolve(process.cwd(), 'projects', slug);
+      fs.mkdirSync(projectDir, { recursive: true });
+      const scriptFile = path.join(projectDir, 'script.txt');
+      const resolvedAspect =
+        flags.aspect && flags.aspect !== 'all' ? flags.aspect : '9:16';
+      const content = createStarterScriptTemplate(rawTitle, resolvedAspect);
+      fs.writeFileSync(scriptFile, content, 'utf-8');
+      console.log(`\n[BlobToon] Scaffolded new project script:`);
+      console.log(`  - Path:     ${scriptFile}`);
+      console.log(`  - Validate: npm run validate -- ${path.relative(process.cwd(), scriptFile)}`);
+      console.log(`  - Render:   npm run make -- ${path.relative(process.cwd(), scriptFile)} --mock-tts\n`);
+      return;
+    }
+
+    case 'validate': {
+      const targetFile = flags.positional[0];
+      if (!targetFile) {
+        console.error('Usage: npm run validate -- <script.txt|script.json|timeline.json>');
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const resolvedPath = path.resolve(process.cwd(), targetFile);
+        if (!fs.existsSync(resolvedPath)) {
+          throw new Error(`File not found: ${targetFile}`);
+        }
+        if (targetFile.endsWith('.txt')) {
+          const script = loadScriptFromFile(targetFile);
+          console.log(
+            `[VALID] ${targetFile}: "${script.title}" (${script.scenes.length} scenes, aspect ${script.aspect})`
+          );
+          return;
+        }
+        const rawJson = JSON.parse(fs.readFileSync(resolvedPath, 'utf-8')) as Record<
+          string,
+          unknown
+        >;
+        if (
+          Array.isArray(rawJson.scenes) &&
+          rawJson.scenes.length > 0 &&
+          typeof (rawJson.scenes[0] as Record<string, unknown>).durationInFrames === 'number'
+        ) {
+          const timeline = parseTimelineStrict(rawJson, path.basename(resolvedPath));
+          console.log(
+            `[VALID] ${targetFile}: Timeline "${timeline.title}" (${timeline.scenes.length} scenes, ${timeline.totalDurationSec}s, aspect ${timeline.aspect})`
+          );
+        } else {
+          const script = loadScriptFromFile(targetFile);
+          console.log(
+            `[VALID] ${targetFile}: Script "${script.title}" (${script.scenes.length} scenes, aspect ${script.aspect})`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[INVALID] ${targetFile}: ${err instanceof Error ? err.message : String(err)}`
+        );
+        process.exitCode = 1;
+      }
+      return;
+    }
+
+    case 'sfx:demo': {
+      const outDir = path.resolve(process.cwd(), flags.outDir || 'out');
+      fs.mkdirSync(outDir, { recursive: true });
+      console.log(`[BlobToon] Rendering 11s SFX Demo Showcase to ${outDir}/sfx_demo.mp4 ...`);
+      const demoTimeline = buildSfxDemoTimeline('9:16');
+      const res = await renderTimelineToVideo(demoTimeline, {
+        outDir,
+        sfx: true,
+        sfxVolume: 0.65,
+        copyAudioToSubdir: false,
+      });
+      const sfxDemoPath = path.join(outDir, 'sfx_demo.mp4');
+      fs.copyFileSync(res.videoPath, sfxDemoPath);
+      const metrics = await probeMediaAudioMetrics(sfxDemoPath);
+      console.log(`\n[BlobToon] SFX Demo Complete:`);
+      console.log(`  - Video MP4:     ${sfxDemoPath}`);
+      console.log(`  - Duration:      ${res.durationSec}s`);
+      console.log(
+        `  - Audio Stream:  codec=${metrics.audioCodec}, rms=${metrics.rms}, peak=${metrics.peak}, A/V diff=${metrics.durationDiffMs}ms\n`
+      );
+      return;
+    }
+
+    case 'preview': {
+      const targetScript = flags.positional[0];
+      if (targetScript) {
+        const script = loadScriptFromFile(targetScript);
+        console.log(
+          `[BlobToon Preview] Validated ${targetScript} ("${script.title}", ${script.scenes.length} scenes). Launching Remotion Studio...`
+        );
+      }
+      const res = spawnSync('npx', ['remotion', 'studio', 'src/render/index.ts'], {
+        stdio: 'inherit',
+        cwd: process.cwd(),
+      });
+      if (res.status !== 0) {
+        process.exitCode = res.status ?? 1;
+      }
+      return;
+    }
+
+    case 'render': {
+      const outDir = path.resolve(process.cwd(), flags.outDir || 'out');
+      fs.mkdirSync(outDir, { recursive: true });
+
+      if (flags.gallery) {
+        const resolved = resolveAspectSelection(flags.aspect, '9:16');
+        const baseTimeline = createGalleryTimeline(resolved.aspect);
+        const timelineWithAudio = {
+          ...baseTimeline,
+          audio: {
+            sfx: flags.sfx,
+            sfxVolume: flags.sfxVolume,
+            ...(flags.music ? { music: flags.music } : {}),
+          },
+        };
+        if (resolved.mode === 'all') {
+          console.log('[BlobToon] Rendering Gallery Showcase across ALL 4 aspect ratios...');
+          const results = await renderTimelineAllAspects(timelineWithAudio, {
+            outDir,
+            maxDurationSec: flags.maxDurationSec,
+            voiceProviderName: 'mock',
+            sfx: flags.sfx,
+            sfxVolume: flags.sfxVolume,
+            musicPath: flags.music,
+          });
+          for (const r of results) {
+            logRenderSummary(r, 'mock');
+          }
+        } else {
+          console.log(
+            `[BlobToon] Rendering Gallery Showcase (${resolved.aspect}: ${ASPECT_PRESETS[resolved.aspect].width}x${ASPECT_PRESETS[resolved.aspect].height})...`
+          );
+          const res = await renderTimelineToVideo(timelineWithAudio, {
+            outDir,
+            aspect: resolved.aspect,
+            maxDurationSec: flags.maxDurationSec,
+            voiceProviderName: 'mock',
+            sfx: flags.sfx,
+            sfxVolume: flags.sfxVolume,
+            musicPath: flags.music,
+          });
+          logRenderSummary(res, 'mock');
+        }
+        return;
+      }
+
+      const inputFile = flags.positional[0] || path.join(outDir, 'timeline.json');
+      const resolvedInput = path.resolve(process.cwd(), inputFile);
+      if (!fs.existsSync(resolvedInput)) {
+        throw new Error(`Input file not found: ${resolvedInput}`);
+      }
+
+      // Support `.script.txt` or `.script.json` directly in `npm run render`
+      if (resolvedInput.endsWith('.txt') || resolvedInput.endsWith('.script.json')) {
+        const script = loadScriptFromFile(resolvedInput);
+        await renderLoadedScript(script, flags, outDir);
+        return;
+      }
+
+      const rawJson = JSON.parse(fs.readFileSync(resolvedInput, 'utf-8')) as Record<
+        string,
+        unknown
+      >;
+      const isTimelineJson =
+        Array.isArray(rawJson.scenes) &&
+        rawJson.scenes.length > 0 &&
+        typeof (rawJson.scenes[0] as Record<string, unknown>).durationInFrames === 'number';
+
+      if (!isTimelineJson) {
+        const script = loadScriptFromFile(resolvedInput);
+        await renderLoadedScript(script, flags, outDir);
+        return;
+      }
+
+      const parsedTimeline = parseTimelineStrict(rawJson, path.basename(resolvedInput));
+      const resolved = resolveAspectSelection(flags.aspect, parsedTimeline.aspect);
+
+      if (resolved.mode === 'all') {
+        console.log(
+          `[BlobToon] Rendering ${resolvedInput} across ALL 4 aspect ratios (${ALL_ASPECT_RATIOS.join(', ')})...`
+        );
+        const results = await renderTimelineAllAspects(parsedTimeline, {
+          outDir,
+          maxDurationSec: flags.maxDurationSec,
+          sfx: flags.sfx,
+          sfxVolume: flags.sfxVolume,
+          musicPath: flags.music,
+        });
+        for (const r of results) {
+          logRenderSummary(r, 'cached');
+        }
+      } else {
+        const adapted = applyAspectToTimeline(parsedTimeline, resolved.aspect);
+        console.log(
+          `[BlobToon] Rendering ${resolvedInput} at ${resolved.aspect} (${adapted.width}x${adapted.height})...`
+        );
+        const res = await renderTimelineToVideo(adapted, {
+          outDir,
+          aspect: resolved.aspect,
+          maxDurationSec: flags.maxDurationSec,
+          sfx: flags.sfx,
+          sfxVolume: flags.sfxVolume,
+          musicPath: flags.music,
+        });
+        logRenderSummary(res, 'cached');
+      }
+      return;
+    }
+
+    case 'make': {
+      const targetArg = flags.positional[0] || 'examples/demo.script.txt';
+      const outDir = path.resolve(process.cwd(), flags.outDir || 'out');
+      fs.mkdirSync(outDir, { recursive: true });
+
+      const candidatePath = path.resolve(process.cwd(), targetArg);
+      let script: Script;
+      if (fs.existsSync(candidatePath)) {
+        script = loadScriptFromFile(candidatePath);
+      } else if (flags.mock) {
+        const resolved = resolveAspectSelection(flags.aspect, '9:16');
+        script = createPhase1ThreeSceneScript(resolved.aspect);
+      } else {
+        throw new Error(
+          `Script file not found: '${targetArg}'. Pass a .script.txt or .script.json file (e.g. npm run make -- examples/demo.script.txt --mock-tts).`
+        );
+      }
+
+      fs.writeFileSync(path.join(outDir, 'script.json'), JSON.stringify(script, null, 2));
+      await renderLoadedScript(script, flags, outDir);
+      return;
+    }
+
+    case 'batch': {
+      const inputTarget = flags.positional[0] || 'examples';
+      const scriptFiles = resolveScriptFilesInput(inputTarget);
+      if (scriptFiles.length === 0) {
+        throw new Error(
+          `No script files (.script.txt or .script.json) found matching '${inputTarget}'.`
+        );
+      }
+
+      const skillDef = resolveOptionalSkill(flags.skill);
+      console.log(
+        `[BlobToon Batch] Processing ${scriptFiles.length} script file(s) from ${inputTarget}${
+          skillDef ? ` (skill: ${skillDef.name})` : ''
+        }...`
+      );
+
+      for (let i = 0; i < scriptFiles.length; i++) {
+        const file = scriptFiles[i];
+        const variation = selectVariationForIndex(i);
+        const script = loadScriptFromFile(file);
+        const slug = `${String(i + 1).padStart(2, '0')}-${slugifyTopic(script.title)}`;
+        const subDir = path.resolve(process.cwd(), flags.outDir || 'out', slug);
+        fs.mkdirSync(subDir, { recursive: true });
+
+        console.log(
+          `\n[${i + 1}/${scriptFiles.length}] "${script.title}" (${path.relative(
+            process.cwd(),
+            file
+          )}, Palette: ${variation.name})`
+        );
+
+        fs.writeFileSync(path.join(subDir, 'script.json'), JSON.stringify(script, null, 2));
+        await renderLoadedScript(script, flags, subDir);
+      }
+      return;
+    }
+
+    default: {
+      console.log(`
+BlobToon CLI — Manual 2D Cartoon Renderer (Script In -> Video Out)
+
+Commands:
+  npm run new -- "<title>"                                             Scaffold projects/<slug>/script.txt from template
+  npm run validate -- <script.txt|script.json>                         Parse & validate script (reports exact line numbers)
+  npm run make -- <script.txt|script.json> [--aspect 9:16|16:9|4:3|3:4|all] [--voice X] [--mock-tts]
+  npm run render -- <timeline.json|script.txt|script.json> [--mock-tts] [--aspect ...]
+  npm run render -- --gallery [--aspect 9:16|16:9|4:3|3:4|all]         Render character & prop registry showcase
+  npm run batch -- <folder or glob of scripts> [--mock-tts]            Batch render all scripts in folder/glob
+  npm run voices                                                       List VoiceStudio voices or setup instructions
+  npm run say -- "some text" --voice "Voice A" [--speed 1.0]           Synthesize & save a single line for auditioning
+  npm run skills                                                       List all skills in skills/*.md
+  npm run sfx:demo                                                     Render 10s showcase of all 11 procedural SFX
+  npm run preview -- [script file]                                     Open Remotion Studio preview
+  npm run doctor                                                       Verify Node, ffmpeg, ffprobe, VoiceStudio & fonts
+      `);
+    }
+  }
+}
+
+export { buildDeterministicScript };
+
+const isDirectExecution =
+  typeof process !== 'undefined' &&
+  Array.isArray(process.argv) &&
+  process.argv[1] &&
+  (process.argv[1].endsWith('src/cli/index.ts') || process.argv[1].endsWith('src\\cli\\index.ts'));
+
+if (isDirectExecution) {
+  runCli(process.argv).catch((err) => {
+    console.error('[BlobToon CLI Error]:', err instanceof Error ? err.message : err);
     process.exit(1);
   });
 }
-
-export { assembleTimelineFromDurations };

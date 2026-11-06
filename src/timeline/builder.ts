@@ -1,10 +1,16 @@
+import path from 'node:path';
 import { AspectRatio, getAspectPreset } from '../aspect';
 import { Script, PaletteVariation } from '../script/schema';
 import { PALETTE_VARIATIONS, computeTopicSeed } from '../script/variations';
 import { buildDeterministicScript } from '../script/generator';
 import { collectSfxEvents } from '../sfx/events';
 import { SkillRenderParams } from '../skills/schema';
-import { TtsProvider } from '../voice/provider';
+import {
+  TtsProvider,
+  concatenateWavFiles,
+  computeTtsCacheKey,
+  resolveLineVoice,
+} from '../voice/provider';
 import {
   Timeline,
   TimelineAudioConfig,
@@ -27,6 +33,44 @@ export interface BuildTimelineOptions {
   scenePaddingSec?: number;
   voice?: string;
   variation?: PaletteVariation;
+}
+
+/**
+ * Computes the map of character ID -> resolved voice name across a Script.
+ */
+export function resolveScriptVoicesUsed(
+  script: Script,
+  cliVoiceOverride?: string,
+  envVoice?: string
+): Record<string, string> {
+  const voicesUsed: Record<string, string> = {};
+  const projectVoice = cliVoiceOverride ?? script.voice;
+
+  for (const scene of script.scenes) {
+    for (const char of scene.characters) {
+      if (!voicesUsed[char.id]) {
+        voicesUsed[char.id] = resolveLineVoice({
+          characterVoice: char.voice,
+          scriptVoice: projectVoice,
+          envVoice,
+        });
+      }
+    }
+    if (scene.lines) {
+      for (const ln of scene.lines) {
+        if (ln.silent) continue;
+        const charObj = scene.characters.find((c) => c.id === ln.speakerId);
+        voicesUsed[ln.speakerId] = resolveLineVoice({
+          lineVoice: ln.voice,
+          characterVoice: charObj?.voice,
+          scriptVoice: projectVoice,
+          envVoice,
+        });
+      }
+    }
+  }
+
+  return voicesUsed;
 }
 
 /**
@@ -129,9 +173,6 @@ export function resolveVariationWithColorPalette(
 
 /**
  * Pure synchronous timeline builder given pre-synthesized voice durations per scene.
- * When `options.renderParams` is provided from a Skill file, merges `renderParams` into
- * the Timeline and applies `ttsSpeedMultiplier`, `sceneDurationRange`, `transitionType`,
- * and `colorPalette` overrides.
  */
 export function assembleTimelineFromDurations(
   script: Script,
@@ -153,6 +194,8 @@ export function assembleTimelineFromDurations(
     renderParams?.ttsSpeedMultiplier && renderParams.ttsSpeedMultiplier > 0
       ? renderParams.ttsSpeedMultiplier
       : 1.0;
+
+  const voicesUsed = resolveScriptVoicesUsed(script, options.voice);
 
   let currentFrame = 0;
   const timelineScenes: TimelineScene[] = script.scenes.map((scene, idx) => {
@@ -191,6 +234,7 @@ export function assembleTimelineFromDurations(
       narration: scene.narration,
       caption: scene.caption,
       background: scene.background,
+      ...(scene.bgColors ? { bgColors: scene.bgColors } : {}),
       transition: effectiveTransition,
       audioFile: voiceRes.file,
       voiceDurationSec,
@@ -203,6 +247,7 @@ export function assembleTimelineFromDurations(
       characters: scene.characters,
       props: scene.props,
       beats: scene.beats,
+      ...(scene.lines ? { lines: scene.lines } : {}),
       ...(scene.sfx !== undefined ? { sfx: scene.sfx } : {}),
       layoutOverrides: scene.layoutOverrides,
     };
@@ -220,6 +265,8 @@ export function assembleTimelineFromDurations(
   const timeline: Timeline = {
     version: '1.0',
     aspect,
+    ...(options.voice ?? script.voice ? { voice: options.voice ?? script.voice } : {}),
+    voicesUsed,
     seed,
     ...(skillName ? { skill: skillName } : {}),
     ...(renderParams ? { renderParams } : {}),
@@ -242,9 +289,9 @@ export function assembleTimelineFromDurations(
 }
 
 /**
- * Full async timeline builder: synthesizes narration per scene via TtsProvider,
- * applies `renderParams.ttsSpeedMultiplier` when present, measures real audio durations,
- * and produces a validated Timeline JSON object.
+ * Full async timeline builder: synthesizes narration per scene (or per line when `scene.lines` is present)
+ * via TtsProvider, resolving voices with `line.voice > character.voice > script.voice > VOICESTUDIO_VOICE`,
+ * skipping `silent` lines, applying `line.speed * renderParams.ttsSpeedMultiplier`, and producing a validated Timeline.
  */
 export async function buildTimeline(
   script: Script,
@@ -254,22 +301,82 @@ export async function buildTimeline(
   const voiceResults: Array<{ file?: string; durationSec: number; speedAdjusted?: boolean }> = [];
   let providerUsed = 'mock';
   const effectiveRenderParams = options.renderParams ?? script.renderParams;
-  const ttsSpeedMultiplier = effectiveRenderParams?.ttsSpeedMultiplier ?? 1.0;
+  const globalSpeedMultiplier = effectiveRenderParams?.ttsSpeedMultiplier ?? 1.0;
+  const projectDefaultVoice = options.voice ?? script.voice;
 
   for (const scene of script.scenes) {
-    const res = await ttsProvider.synthesize(
-      scene.narration,
-      options.voice,
-      ttsSpeedMultiplier
-    );
-    if (res.provider) {
-      providerUsed = res.provider;
+    const spokenLines = scene.lines?.filter((l) => !l.silent) ?? [];
+
+    if (spokenLines.length > 0) {
+      const lineFiles: string[] = [];
+      let totalDur = 0;
+
+      for (const ln of spokenLines) {
+        const charObj = scene.characters.find((c) => c.id === ln.speakerId);
+        const resolvedVoice = resolveLineVoice({
+          lineVoice: ln.voice,
+          characterVoice: charObj?.voice,
+          scriptVoice: projectDefaultVoice,
+        });
+        const lineSpeed = (ln.speed ?? 1.0) * globalSpeedMultiplier;
+        const res = await ttsProvider.synthesize(ln.text, resolvedVoice, lineSpeed);
+        if (res.provider) {
+          providerUsed = res.provider;
+        }
+        lineFiles.push(res.file);
+        totalDur += res.durationSec;
+      }
+
+      if (lineFiles.length === 1) {
+        voiceResults.push({
+          file: lineFiles[0],
+          durationSec: Number(totalDur.toFixed(3)),
+          speedAdjusted: true,
+        });
+      } else {
+        const combinedKey = computeTtsCacheKey(
+          `scene:${scene.id}`,
+          lineFiles.join('|'),
+          globalSpeedMultiplier
+        );
+        const combinedPath = path.join(path.dirname(lineFiles[0]), `scene_${combinedKey}.wav`);
+        const concatDur = await concatenateWavFiles(lineFiles, combinedPath);
+        voiceResults.push({
+          file: combinedPath,
+          durationSec: Number(Math.max(0.5, concatDur).toFixed(3)),
+          speedAdjusted: true,
+        });
+      }
+    } else if (scene.lines && scene.lines.length > 0 && spokenLines.length === 0) {
+      // All lines in this scene are marked `silent`: no spoken audio, estimate reading duration
+      const words = scene.caption.trim().split(/\s+/).filter(Boolean).length;
+      const silentDur = Number(Math.max(1.8, words / 2.8).toFixed(2));
+      voiceResults.push({
+        file: undefined,
+        durationSec: silentDur,
+        speedAdjusted: true,
+      });
+    } else {
+      const firstSpeakingChar =
+        scene.characters.find((c) => c.speaking) ?? scene.characters[0];
+      const resolvedVoice = resolveLineVoice({
+        characterVoice: firstSpeakingChar?.voice,
+        scriptVoice: projectDefaultVoice,
+      });
+      const res = await ttsProvider.synthesize(
+        scene.narration,
+        resolvedVoice,
+        globalSpeedMultiplier
+      );
+      if (res.provider) {
+        providerUsed = res.provider;
+      }
+      voiceResults.push({
+        file: res.file,
+        durationSec: res.durationSec,
+        speedAdjusted: res.speedAdjusted ?? true,
+      });
     }
-    voiceResults.push({
-      file: res.file,
-      durationSec: res.durationSec,
-      speedAdjusted: res.speedAdjusted ?? true,
-    });
   }
 
   const timeline = assembleTimelineFromDurations(script, voiceResults, {
@@ -291,6 +398,7 @@ export function buildVideoMeta(timeline: Timeline, voiceProvider = 'mock'): Vide
     seed: timeline.seed,
     ...(timeline.skill ? { skill: timeline.skill } : {}),
     ...(timeline.renderParams ? { renderParams: timeline.renderParams } : {}),
+    voicesUsed: timeline.voicesUsed ?? {},
     audio: {
       sfx: audioCfg.sfx,
       sfxVolume: audioCfg.sfxVolume,

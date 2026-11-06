@@ -1,41 +1,46 @@
 import { AspectRatio } from '../aspect';
-import { PALETTE_VARIATIONS } from '../script/variations';
+import { listCharacterDefinitions } from '../characters';
 import { Script, ScriptSchema } from '../script/schema';
+import { PALETTE_VARIATIONS } from '../script/variations';
 import { assembleTimelineFromDurations } from '../timeline/builder';
 import { Timeline } from '../timeline/schema';
 
 /**
- * Builds the Phase 2 Showcase Gallery Script & Timeline demonstrating:
- * - Every Emotion (happy, sad, shock, angry, smug, sleepy, laughing)
- * - Every Accessory (hoodie, cap, glasses, crown, headphones, bandana, bowtie)
- * - Every Prop (phone, controller, clock, homework, toothbrush, door, heart, trophy)
- * - 4+ Backgrounds (room, kitchen, school, arcade)
- * Works cleanly in any aspect ratio (9:16, 16:9, 4:3, 3:4).
+ * Generates a deterministic showcase Script exercising all registered characters (`blob`, `robot`, etc.),
+ * emotions, animations, accessories, props, and backgrounds across any aspect ratio.
  */
 export function createGalleryScript(aspect: AspectRatio = '9:16'): Script {
-  const script: Script = {
+  const registeredIds = listCharacterDefinitions().map((d) => d.id);
+  const secondType = registeredIds.includes('robot') ? 'robot' : registeredIds[0] || 'blob';
+
+  const raw: Script = {
     aspect,
-    topic: 'BlobToon Component Gallery: 7 Emotions, 8 Props, 6 Backgrounds',
-    title: 'BlobToon Character, Emotion & Prop Showcase',
-    hook: 'Meet the procedural SVG BlobToon cast: seven emotions, eight props, and dynamic backgrounds.',
-    description: 'Full visual showcase of every Blob emotion, accessory, prop, and SVG background.',
-    hashtags: ['#blobtoon', '#remotion', '#svg', '#gallery'],
+    topic: 'BlobToon Asset & Character Registry Gallery Showcase',
+    title: 'BlobToon Registry Showcase: Blob & Robot Characters',
+    hook: 'Meet all registered characters, emotions, animations, accessories, and stage props!',
+    description:
+      'Automated gallery composition showcasing registered character plugins (blob, robot), emotions, animations, accessories, props, and backgrounds.',
+    hashtags: ['#blobtoon', '#remotion', '#svg', '#animation', '#gallery'],
     scenes: [
       {
-        id: 'gallery_emotions_1',
-        label: 'EMOTIONS 1-4',
-        narration: 'Here are our blobs showing Happy, Shock, Angry, and Laughing emotions with custom hoodies and headphones.',
-        caption: 'HAPPY · SHOCK · ANGRY · LAUGHING EMOTIONS',
+        id: 'gallery_scene_1',
+        label: 'BLOB & ROBOT',
+        narration:
+          'Welcome to the BlobToon registry! Both squishy Blobs and BoxBot Robots animate with pure SVG math.',
+        caption:
+          'Welcome to the BlobToon registry! Both squishy Blobs and BoxBot Robots animate with pure SVG math.',
         background: 'room',
         transition: 'zoom',
         characters: [
           {
-            id: 'blob_happy',
-            name: 'Happy',
+            id: 'gal_c1',
+            name: 'Sky Blob',
+            type: 'blob',
             color: '#38bdf8',
             accessory: 'headphones',
-            size: 0.78,
-            x: 0.18,
+            hoodieColor: '#6366f1',
+            size: 1.0,
+            x: 0.25,
             y: 0.62,
             emotion: 'happy',
             animation: 'bounce',
@@ -43,12 +48,15 @@ export function createGalleryScript(aspect: AspectRatio = '9:16'): Script {
             flipX: false,
           },
           {
-            id: 'blob_shock',
-            name: 'Shock',
+            id: 'gal_c2',
+            name: 'BoxBot',
+            type: secondType,
             color: '#f472b6',
-            accessory: 'hoodie',
-            size: 0.78,
-            x: 0.39,
+            accentColor: '#38bdf8',
+            accessory: 'glasses',
+            hoodieColor: '#ec4899',
+            size: 1.02,
+            x: 0.52,
             y: 0.62,
             emotion: 'shock',
             animation: 'jump',
@@ -56,55 +64,93 @@ export function createGalleryScript(aspect: AspectRatio = '9:16'): Script {
             flipX: false,
           },
           {
-            id: 'blob_angry',
-            name: 'Angry',
-            color: '#fb923c',
-            accessory: 'bandana',
-            size: 0.78,
-            x: 0.61,
-            y: 0.62,
-            emotion: 'angry',
-            animation: 'shake',
-            speaking: false,
-            flipX: true,
-          },
-          {
-            id: 'blob_laughing',
-            name: 'Laughing',
+            id: 'gal_c3',
+            name: 'Mint Blob',
+            type: 'blob',
             color: '#34d399',
             accessory: 'crown',
-            size: 0.78,
-            x: 0.82,
+            hoodieColor: '#10b981',
+            size: 0.98,
+            x: 0.78,
             y: 0.62,
-            emotion: 'laughing',
-            animation: 'squash-and-stretch',
-            speaking: true,
+            emotion: 'smug',
+            animation: 'walk',
+            speaking: false,
             flipX: true,
           },
         ],
         props: [
-          { id: 'p_ctrl', type: 'controller', x: 0.3, y: 0.44, scale: 0.9, rotation: -8, animation: 'bounce', label: 'CONTROLLER' },
-          { id: 'p_phone', type: 'phone', x: 0.7, y: 0.44, scale: 0.9, rotation: 8, animation: 'shake', label: 'PHONE' },
+          {
+            id: 'gal_p1',
+            type: 'controller',
+            x: 0.35,
+            y: 0.44,
+            scale: 1.1,
+            rotation: -10,
+            animation: 'bounce',
+            label: 'CONTROLLER',
+          },
+          {
+            id: 'gal_p2',
+            type: 'trophy',
+            x: 0.68,
+            y: 0.44,
+            scale: 1.1,
+            rotation: 8,
+            animation: 'spin',
+            label: 'TROPHY',
+          },
         ],
         beats: [
-          { atProgress: 0.2, targetId: 'blob_shock', emotion: 'shock', bubbleText: 'SO EXPRESSIVE!' },
+          {
+            atProgress: 0.15,
+            targetId: 'gal_c1',
+            emotion: 'happy',
+            bubbleText: 'BOUNCE + HAPPY!',
+          },
+          {
+            atProgress: 0.55,
+            targetId: 'gal_c2',
+            emotion: 'shock',
+            bubbleText: 'ROBOT SHOCK!',
+          },
         ],
       },
       {
-        id: 'gallery_emotions_2',
-        label: 'EMOTIONS 5-7 & PROPS',
-        narration: 'Next up: Sad, Smug, and Sleepy blobs surrounded by Clock, Homework, and Toothbrush props in the kitchen.',
-        caption: 'SAD · SMUG · SLEEPY + KITCHEN PROPS',
-        background: 'kitchen',
+        id: 'gallery_scene_2',
+        label: 'EMOTIONS 2',
+        narration:
+          'Next come angry shakes, sad raindrops, scared trembles, and laughing squash and stretch.',
+        caption:
+          'Next come angry shakes, sad raindrops, scared trembles, and laughing squash and stretch.',
+        background: 'arcade',
         transition: 'wipe',
         characters: [
           {
-            id: 'blob_sad',
-            name: 'Sad',
-            color: '#60a5fa',
+            id: 'gal_c4',
+            name: 'Gold Bot',
+            type: secondType,
+            color: '#fbbf24',
+            accentColor: '#f43f5e',
             accessory: 'cap',
-            size: 0.88,
-            x: 0.24,
+            hoodieColor: '#f59e0b',
+            size: 1.0,
+            x: 0.25,
+            y: 0.62,
+            emotion: 'angry',
+            animation: 'shake',
+            speaking: true,
+            flipX: false,
+          },
+          {
+            id: 'gal_c5',
+            name: 'Violet',
+            type: 'blob',
+            color: '#a78bfa',
+            accessory: 'hoodie',
+            hoodieColor: '#7c3aed',
+            size: 1.0,
+            x: 0.52,
             y: 0.62,
             emotion: 'sad',
             animation: 'idle',
@@ -112,96 +158,150 @@ export function createGalleryScript(aspect: AspectRatio = '9:16'): Script {
             flipX: false,
           },
           {
-            id: 'blob_smug',
-            name: 'Smug',
-            color: '#a78bfa',
-            accessory: 'glasses',
-            size: 0.92,
-            x: 0.5,
-            y: 0.62,
-            emotion: 'smug',
-            animation: 'scale-pop',
-            speaking: true,
-            flipX: false,
-          },
-          {
-            id: 'blob_sleepy',
-            name: 'Sleepy',
-            color: '#facc15',
+            id: 'gal_c6',
+            name: 'Coral',
+            type: 'blob',
+            color: '#fb7185',
             accessory: 'bowtie',
-            size: 0.88,
-            x: 0.76,
+            hoodieColor: '#e11d48',
+            size: 1.04,
+            x: 0.78,
             y: 0.62,
-            emotion: 'sleepy',
-            animation: 'idle',
+            emotion: 'laughing',
+            animation: 'squash-and-stretch',
             speaking: false,
             flipX: true,
           },
         ],
         props: [
-          { id: 'p_clock', type: 'clock', x: 0.24, y: 0.43, scale: 0.88, rotation: 0, animation: 'shake', label: 'CLOCK' },
-          { id: 'p_hw', type: 'homework', x: 0.5, y: 0.43, scale: 0.88, rotation: -5, animation: 'bounce', label: 'HOMEWORK' },
-          { id: 'p_brush', type: 'toothbrush', x: 0.76, y: 0.43, scale: 0.88, rotation: 10, animation: 'spin', label: 'TOOTHBRUSH' },
+          {
+            id: 'gal_p3',
+            type: 'phone',
+            x: 0.36,
+            y: 0.44,
+            scale: 1.05,
+            rotation: 6,
+            animation: 'shake',
+            label: 'PHONE',
+          },
+          {
+            id: 'gal_p4',
+            type: 'clock',
+            x: 0.66,
+            y: 0.44,
+            scale: 1.05,
+            rotation: 0,
+            animation: 'bounce',
+            label: 'TIMER',
+          },
         ],
         beats: [
-          { atProgress: 0.25, targetId: 'blob_smug', emotion: 'smug', bubbleText: 'PURE SVG CODE!' },
+          {
+            atProgress: 0.2,
+            targetId: 'gal_c4',
+            emotion: 'angry',
+            bubbleText: 'ANGRY + SHAKE!',
+          },
+          {
+            atProgress: 0.6,
+            targetId: 'gal_c6',
+            emotion: 'laughing',
+            bubbleText: 'SQUASH & STRETCH!',
+          },
         ],
       },
       {
-        id: 'gallery_school_arcade',
-        label: 'SCHOOL & ARCADE',
-        narration: 'Finally, check out the Door, Heart, and Trophy props inside our School and Arcade backgrounds.',
-        caption: 'DOOR · HEART · TROPHY + SCHOOL STAGE',
+        id: 'gallery_scene_3',
+        label: 'STAGE & PROPS',
+        narration:
+          'Finally we test sleepy spins, scared slide-ins, and all remaining props across kitchen and school.',
+        caption:
+          'Finally we test sleepy spins, scared slide-ins, and all remaining props across kitchen and school.',
         background: 'school',
-        transition: 'slide',
+        transition: 'iris',
         characters: [
           {
-            id: 'blob_ace',
-            name: 'Student',
-            color: '#34d399',
-            accessory: 'glasses',
-            size: 0.95,
+            id: 'gal_c7',
+            name: 'bandana',
+            type: 'blob',
+            color: '#38bdf8',
+            accessory: 'bandana',
+            hoodieColor: '#0284c7',
+            size: 1.0,
             x: 0.32,
             y: 0.62,
-            emotion: 'happy',
-            animation: 'walk',
+            emotion: 'scared',
+            animation: 'slide-in',
             speaking: true,
             flipX: false,
           },
           {
-            id: 'blob_champ',
-            name: 'Champ',
-            color: '#f43f5e',
-            accessory: 'crown',
+            id: 'gal_c8',
+            name: 'SleepyBot',
+            type: secondType,
+            color: '#f472b6',
+            accentColor: '#facc15',
+            accessory: 'none',
+            hoodieColor: '#db2777',
             size: 1.0,
             x: 0.68,
             y: 0.62,
-            emotion: 'laughing',
-            animation: 'jump',
+            emotion: 'sleepy',
+            animation: 'spin',
             speaking: false,
             flipX: true,
           },
         ],
         props: [
-          { id: 'p_door', type: 'door', x: 0.22, y: 0.43, scale: 0.85, rotation: 0, animation: 'scale-pop', label: 'DOOR' },
-          { id: 'p_heart', type: 'heart', x: 0.5, y: 0.43, scale: 0.9, rotation: 0, animation: 'bounce', label: 'HEART' },
-          { id: 'p_trophy', type: 'trophy', x: 0.78, y: 0.43, scale: 0.9, rotation: 0, animation: 'bounce', label: 'TROPHY' },
+          {
+            id: 'gal_p5',
+            type: 'homework',
+            x: 0.24,
+            y: 0.44,
+            scale: 0.95,
+            rotation: -8,
+            animation: 'bounce',
+          },
+          {
+            id: 'gal_p6',
+            type: 'door',
+            x: 0.5,
+            y: 0.44,
+            scale: 0.95,
+            rotation: 0,
+            animation: 'scale-pop',
+          },
+          {
+            id: 'gal_p7',
+            type: 'heart',
+            x: 0.76,
+            y: 0.44,
+            scale: 0.95,
+            rotation: 8,
+            animation: 'bounce',
+          },
         ],
         beats: [
-          { atProgress: 0.3, targetId: 'blob_champ', emotion: 'laughing', bubbleText: 'ALL ASSETS READY!' },
+          {
+            atProgress: 0.25,
+            targetId: 'gal_c7',
+            emotion: 'scared',
+            bubbleText: 'SLIDE-IN + SCARED!',
+          },
         ],
       },
     ],
   };
 
-  return ScriptSchema.parse(script);
+  return ScriptSchema.parse(raw);
 }
 
 export function createGalleryTimeline(aspect: AspectRatio = '9:16'): Timeline {
   const script = createGalleryScript(aspect);
-  return assembleTimelineFromDurations(
-    script,
-    [{ durationSec: 3.0 }, { durationSec: 3.0 }, { durationSec: 3.0 }],
-    { aspect, variation: PALETTE_VARIATIONS[0], scenePaddingSec: 0.3 }
-  );
+  const durations = script.scenes.map(() => ({ durationSec: 2.55 }));
+  return assembleTimelineFromDurations(script, durations, {
+    aspect,
+    variation: PALETTE_VARIATIONS[0],
+    scenePaddingSec: 0.45,
+  });
 }

@@ -1,390 +1,460 @@
-import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import { AspectRatio, AspectRatioSchema } from './src/aspect';
-import { generateScript } from './src/script/generator';
-import { generateTopicIdeas } from './src/script/ideas';
+import {
+  AspectRatio,
+  AspectSelection,
+  parseAspectSelection,
+} from './src/aspect';
+import { listCharacterDefinitions } from './src/characters';
+import {
+  createStarterScriptTemplate,
+  loadScriptFromFile,
+  parseScriptText,
+  validateScriptCharactersRegistered,
+} from './src/script/parser';
+import { Script, ScriptSchema } from './src/script/schema';
 import {
   PALETTE_VARIATIONS,
-  computeTopicSeed,
   selectVariationForIndex,
+  slugifyTopic,
 } from './src/script/variations';
-import { createDefaultTtsProvider } from './src/voice/provider';
+import { listAvailableSkills, loadSkillByName } from './src/skills/loader';
 import {
   applyAspectToTimeline,
   buildTimeline,
-  resolveVariationWithColorPalette,
 } from './src/timeline/builder';
-import { parseTimelineStrict } from './src/timeline/schema';
+import { Timeline, TimelineSchema } from './src/timeline/schema';
+import {
+  MockProvider,
+  VoiceStudioProvider,
+  checkVoiceStudioHealth,
+  listVoiceStudioVoices,
+} from './src/voice/provider';
+import { createGalleryTimeline } from './src/render/gallery';
 import {
   renderTimelineAllAspects,
   renderTimelineToVideo,
 } from './src/render/renderVideo';
-import { createGalleryScript } from './src/render/gallery';
-import { runDoctorChecks } from './src/cli/doctor';
-import { slugify } from './src/cli/index';
-import { listAvailableSkills, loadSkillByName } from './src/skills/loader';
+
+dotenv.config();
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
-
-  app.use(express.json({ limit: '10mb' }));
-
   const outDir = path.resolve(process.cwd(), 'out');
-  const cacheDir = path.resolve(process.cwd(), 'cache');
   fs.mkdirSync(outDir, { recursive: true });
-  fs.mkdirSync(cacheDir, { recursive: true });
 
-  app.use('/out', express.static(outDir));
-  app.use('/cache', express.static(cacheDir));
-
-  app.get('/api/skills', (_req, res) => {
-    try {
-      const entries = listAvailableSkills();
-      res.json({
-        skills: entries
-          .filter((e): e is typeof e & { skill: NonNullable<typeof e.skill> } => Boolean(e.skill))
-          .map((e) => ({
-            name: e.skill.name,
-            description: e.skill.description,
-            renderParams: e.skill.renderParams,
-          })),
-      });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
+  app.use(express.json({ limit: '5mb' }));
+  app.use('/api/media', express.static(outDir));
 
   app.get('/api/status', async (_req, res) => {
-    const vsUrl = (process.env.VOICESTUDIO_URL || 'http://127.0.0.1:3900').replace(/\/+$/, '');
-    let voiceStudioOnline = false;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1200);
-      const ping = await fetch(`${vsUrl}/.well-known/voicestudio-speech`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      voiceStudioOnline = ping.ok;
-    } catch {
-      voiceStudioOnline = false;
-    }
-
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
-    const anthropicModel = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
-    const anthropicConfigured =
-      Boolean(anthropicKey) &&
-      anthropicKey !== 'your_anthropic_api_key_here' &&
-      anthropicKey !== 'MY_ANTHROPIC_API_KEY';
+    const vsUrl = process.env.VOICESTUDIO_URL || 'http://127.0.0.1:3900';
+    const vsHealth = await checkVoiceStudioHealth(vsUrl);
 
     const videoExists = fs.existsSync(path.join(outDir, 'video.mp4'));
     const thumbExists = fs.existsSync(path.join(outDir, 'thumbnail.png'));
     const metaPath = path.join(outDir, 'meta.json');
-    let lastMeta = null;
-    if (fs.existsSync(metaPath)) {
-      try {
-        lastMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      } catch {
-        lastMeta = null;
-      }
-    }
+    const meta = fs.existsSync(metaPath)
+      ? JSON.parse(fs.readFileSync(metaPath, 'utf-8'))
+      : null;
 
     res.json({
       voiceStudioUrl: vsUrl,
-      voiceStudioOnline,
-      ttsMode: voiceStudioOnline
-        ? 'VoiceStudio HTTP (/v1/audio/speech)'
-        : 'MockProvider (Offline Fallback)',
-      anthropicConfigured,
-      anthropicModel,
-      scriptMode: anthropicConfigured ? `Claude ${anthropicModel}` : 'Deterministic Rule Engine',
+      voiceStudioOnline: vsHealth.ok,
+      ttsMode: vsHealth.ok ? 'VoiceStudio (/v1/audio/speech)' : 'MockProvider (Offline Fallback)',
+      scriptMode: 'Manual (.script.txt / script.json)',
       hasRenderedVideo: videoExists,
-      videoUrl: videoExists ? `/out/video.mp4` : null,
-      thumbnailUrl: thumbExists ? `/out/thumbnail.png` : null,
-      lastMeta,
+      videoUrl: videoExists ? `/api/media/video.mp4` : null,
+      thumbnailUrl: thumbExists ? `/api/media/thumbnail.png` : null,
+      lastMeta: meta,
     });
   });
 
-  app.get('/api/doctor', async (_req, res) => {
-    const report = await runDoctorChecks();
-    res.json(report);
-  });
-
-  app.post('/api/ideas', async (req, res) => {
+  app.get('/api/skills', (_req, res) => {
     try {
-      const niche =
-        typeof req.body?.niche === 'string' && req.body.niche.trim()
-          ? req.body.niche.trim()
-          : 'gaming & school rules';
-      const count = typeof req.body?.count === 'number' ? req.body.count : 10;
-      const result = await generateTopicIdeas(niche, count);
-      res.json(result);
+      const skills = listAvailableSkills();
+      res.json({ skills });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to list skills',
+      });
     }
   });
 
-  app.post('/api/script', async (req, res) => {
+  app.get('/api/characters', (_req, res) => {
+    const characters = listCharacterDefinitions().map((c) => ({
+      id: c.id,
+      name: c.name,
+      emotions: c.emotions,
+      anims: c.anims,
+      defaultVoice: c.defaultVoice ?? 'alloy',
+    }));
+    res.json({ characters });
+  });
+
+  app.get('/api/voices', async (_req, res) => {
     try {
-      const topic =
-        typeof req.body?.topic === 'string' && req.body.topic.trim()
-          ? req.body.topic.trim()
-          : 'What if Mom started playing on your Roblox account';
-      const parsedAspect = AspectRatioSchema.safeParse(req.body?.aspect);
-      const aspect: AspectRatio = parsedAspect.success ? parsedAspect.data : '9:16';
-      const variationId = req.body?.variationId;
-      const baseVariation =
-        PALETTE_VARIATIONS.find((v) => v.id === variationId) ?? PALETTE_VARIATIONS[0];
-      const voice = typeof req.body?.voice === 'string' ? req.body.voice : undefined;
-      const skillName =
-        typeof req.body?.skill === 'string' && req.body.skill.trim()
-          ? req.body.skill.trim()
-          : undefined;
-      const loadedSkill = skillName ? loadSkillByName(skillName) : undefined;
-      const variation = resolveVariationWithColorPalette(
-        baseVariation,
-        loadedSkill?.renderParams?.colorPalette
-      );
-
-      const sfxEnabled = typeof req.body?.sfx === 'boolean' ? req.body.sfx : true;
-      const sfxVolume =
-        typeof req.body?.sfxVolume === 'number' && !Number.isNaN(req.body.sfxVolume)
-          ? Math.max(0, Math.min(1, req.body.sfxVolume))
-          : 0.35;
-
-      const { script, source, attempts } = await generateScript(topic, {
-        variation,
-        aspect,
-        skill: loadedSkill,
+      const report = await listVoiceStudioVoices();
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to list voices',
       });
-      const tts = createDefaultTtsProvider();
-      const seed = computeTopicSeed(topic);
-      const { timeline, providerUsed } = await buildTimeline(script, tts, {
-        aspect,
-        seed,
-        variation,
+    }
+  });
+
+  app.get('/api/projects', (_req, res) => {
+    try {
+      const list: Array<{ id: string; title: string; path: string; scriptText: string }> = [];
+      const demoPath = path.resolve(process.cwd(), 'examples/demo.script.txt');
+      if (fs.existsSync(demoPath)) {
+        const scriptText = fs.readFileSync(demoPath, 'utf-8');
+        list.push({
+          id: 'examples/demo.script.txt',
+          title: 'Demo: What if Mom played on your Roblox account?',
+          path: 'examples/demo.script.txt',
+          scriptText,
+        });
+      }
+
+      const projectsDir = path.resolve(process.cwd(), 'projects');
+      if (fs.existsSync(projectsDir)) {
+        for (const entry of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            const pFile = path.join(projectsDir, entry.name, 'script.txt');
+            if (fs.existsSync(pFile)) {
+              const scriptText = fs.readFileSync(pFile, 'utf-8');
+              const rel = `projects/${entry.name}/script.txt`;
+              list.push({
+                id: rel,
+                title: `Project: ${entry.name}`,
+                path: rel,
+                scriptText,
+              });
+            }
+          }
+        }
+      }
+
+      res.json({ projects: list });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to list projects',
+      });
+    }
+  });
+
+  app.post('/api/projects', (req, res) => {
+    try {
+      const { title, scriptText, aspect: rawAspect } = req.body as {
+        title?: string;
+        scriptText?: string;
+        aspect?: string;
+      };
+      const cleanTitle = (title || 'New BlobToon Project').trim();
+      const slug = slugifyTopic(cleanTitle);
+      const projDir = path.resolve(process.cwd(), 'projects', slug);
+      fs.mkdirSync(projDir, { recursive: true });
+      const filePath = path.join(projDir, 'script.txt');
+      const resolvedSel = parseAspectSelection(rawAspect);
+      const aspect: AspectRatio = resolvedSel === 'all' ? '9:16' : resolvedSel;
+      const bodyText =
+        typeof scriptText === 'string' && scriptText.trim().length > 0
+          ? scriptText
+          : createStarterScriptTemplate(cleanTitle, aspect);
+
+      // Validate before saving
+      const parsed = parseScriptText(bodyText, `projects/${slug}/script.txt`);
+      fs.writeFileSync(filePath, bodyText, 'utf-8');
+
+      res.json({
+        path: `projects/${slug}/script.txt`,
+        scriptText: bodyText,
+        script: parsed,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to save project script',
+      });
+    }
+  });
+
+  app.post('/api/say', async (req, res) => {
+    try {
+      const { text, voice, speed, mockTts } = req.body as {
+        text?: string;
+        voice?: string;
+        speed?: number;
+        mockTts?: boolean;
+      };
+      const cleanText = (text || 'Xin chào từ BlobToon Studio!').trim();
+      const chosenVoice = (voice || process.env.VOICESTUDIO_VOICE || 'alloy').trim();
+      const chosenSpeed = typeof speed === 'number' && speed > 0 ? speed : 1.0;
+
+      const tts = mockTts
+        ? new MockProvider({ defaultVoice: chosenVoice })
+        : new VoiceStudioProvider({ defaultVoice: chosenVoice, fallbackToMock: true });
+
+      const result = await tts.synthesize(cleanText, chosenVoice, chosenSpeed);
+      const safeName = `say_${chosenVoice.toLowerCase().replace(/[^a-z0-9_-]+/g, '_')}.wav`;
+      const outPath = path.join(outDir, safeName);
+      fs.copyFileSync(result.file, outPath);
+
+      res.json({
+        audioUrl: `/api/media/${safeName}?t=${Date.now()}`,
+        durationSec: result.durationSec,
+        provider: result.provider,
+        voiceUsed: chosenVoice,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to synthesize voice preview',
+      });
+    }
+  });
+
+  app.post('/api/parse-script', async (req, res) => {
+    try {
+      const {
+        scriptText,
+        scriptJson,
+        variationId,
+        aspect: rawAspect,
+        skill: skillName,
         voice,
-        skill: loadedSkill?.name,
-        renderParams: loadedSkill?.renderParams,
+        mockTts,
+        sfx,
+        sfxVolume,
+        music,
+      } = req.body as {
+        scriptText?: string;
+        scriptJson?: unknown;
+        variationId?: string;
+        aspect?: string;
+        skill?: string;
+        voice?: string;
+        mockTts?: boolean;
+        sfx?: boolean;
+        sfxVolume?: number;
+        music?: string;
+      };
+
+      const variation =
+        PALETTE_VARIATIONS.find((v) => v.id === variationId) ?? PALETTE_VARIATIONS[0];
+      const skillDef = skillName ? loadSkillByName(skillName) : undefined;
+
+      let script: Script;
+      if (typeof scriptText === 'string' && scriptText.trim().length > 0) {
+        script = parseScriptText(scriptText, 'script.txt');
+      } else if (scriptJson) {
+        script = ScriptSchema.parse(scriptJson);
+        validateScriptCharactersRegistered(script, 'script.json');
+      } else {
+        throw new Error('Provide either scriptText (.script.txt) or scriptJson.');
+      }
+
+      const parsedSel = rawAspect ? parseAspectSelection(rawAspect) : script.aspect;
+      const aspect: AspectRatio = parsedSel === 'all' ? '9:16' : parsedSel;
+
+      const tts = mockTts
+        ? new MockProvider({ defaultVoice: voice })
+        : new VoiceStudioProvider({ defaultVoice: voice, fallbackToMock: true });
+
+      const { timeline, providerUsed } = await buildTimeline(script, tts, {
+        variation,
+        aspect,
+        voice,
+        skill: skillDef?.name ?? script.skill,
+        renderParams: skillDef?.renderParams ?? script.renderParams,
         audio: {
-          sfx: sfxEnabled,
-          sfxVolume,
+          sfx: typeof sfx === 'boolean' ? sfx : true,
+          sfxVolume: typeof sfxVolume === 'number' ? sfxVolume : 0.35,
+          ...(music ? { music } : {}),
         },
       });
 
-      const slugDir = path.join(outDir, slugify(topic));
-      fs.mkdirSync(slugDir, { recursive: true });
-      fs.writeFileSync(path.join(slugDir, 'script.json'), JSON.stringify(script, null, 2), 'utf-8');
-      fs.writeFileSync(path.join(slugDir, 'timeline.json'), JSON.stringify(timeline, null, 2), 'utf-8');
-      fs.writeFileSync(path.join(outDir, 'script.json'), JSON.stringify(script, null, 2), 'utf-8');
-      fs.writeFileSync(path.join(outDir, 'timeline.json'), JSON.stringify(timeline, null, 2), 'utf-8');
+      fs.writeFileSync(path.join(outDir, 'script.json'), JSON.stringify(script, null, 2));
+      fs.writeFileSync(path.join(outDir, 'timeline.json'), JSON.stringify(timeline, null, 2));
 
       res.json({
         script,
         timeline,
-        source,
-        attempts,
+        source: 'manual',
         providerUsed,
       });
     } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : String(err),
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Script validation failed',
       });
     }
   });
 
   app.post('/api/render', async (req, res) => {
     try {
-      const isGallery = Boolean(req.body?.gallery);
-      const rawAspect = req.body?.aspect;
-      const isAllAspects = rawAspect === 'all';
-      const parsedAspect = AspectRatioSchema.safeParse(rawAspect);
-      const requestedAspect: AspectRatio | undefined = parsedAspect.success
-        ? parsedAspect.data
-        : undefined;
+      const {
+        timeline: rawTimeline,
+        gallery,
+        maxDurationSec,
+        aspect: rawAspect,
+        sfx,
+        sfxVolume,
+        music,
+      } = req.body as {
+        timeline?: unknown;
+        gallery?: boolean;
+        maxDurationSec?: number;
+        aspect?: string;
+        sfx?: boolean;
+        sfxVolume?: number;
+        music?: string;
+      };
 
-      const maxDurationSec =
-        typeof req.body?.maxDurationSec === 'number' ? req.body.maxDurationSec : undefined;
-      const sfxEnabled = typeof req.body?.sfx === 'boolean' ? req.body.sfx : undefined;
-      const sfxVolume =
-        typeof req.body?.sfxVolume === 'number' && !Number.isNaN(req.body.sfxVolume)
-          ? Math.max(0, Math.min(1, req.body.sfxVolume))
-          : undefined;
+      const selection: AspectSelection = rawAspect ? parseAspectSelection(rawAspect) : '9:16';
+      const singleAspect: AspectRatio = selection === 'all' ? '9:16' : selection;
 
-      let timeline;
-      let providerUsed = 'mock';
-
-      if (isGallery) {
-        const galleryScript = createGalleryScript(requestedAspect ?? '9:16');
-        const tts = createDefaultTtsProvider();
-        const built = await buildTimeline(galleryScript, tts, {
-          aspect: requestedAspect ?? '9:16',
-          variation: PALETTE_VARIATIONS[0],
-        });
-        timeline = built.timeline;
-        providerUsed = built.providerUsed;
-      } else if (req.body?.timeline) {
-        timeline = parseTimelineStrict(req.body.timeline);
-        if (requestedAspect) {
-          timeline = applyAspectToTimeline(timeline, requestedAspect);
-        }
+      let timeline: Timeline;
+      if (gallery) {
+        timeline = createGalleryTimeline(singleAspect);
+      } else if (rawTimeline) {
+        timeline = TimelineSchema.parse(rawTimeline);
       } else {
-        const { script } = await generateScript(
-          'What if Mom started playing on your Roblox account',
-          { aspect: requestedAspect ?? '9:16' }
-        );
-        const tts = createDefaultTtsProvider();
-        const built = await buildTimeline(script, tts, {
-          aspect: requestedAspect ?? '9:16',
-        });
-        timeline = built.timeline;
-        providerUsed = built.providerUsed;
+        const timelinePath = path.join(outDir, 'timeline.json');
+        if (fs.existsSync(timelinePath)) {
+          timeline = TimelineSchema.parse(JSON.parse(fs.readFileSync(timelinePath, 'utf-8')));
+        } else {
+          timeline = createGalleryTimeline(singleAspect);
+        }
       }
 
-      if (sfxEnabled !== undefined || sfxVolume !== undefined) {
-        timeline = {
-          ...timeline,
-          audio: {
-            ...timeline.audio,
-            sfx: sfxEnabled ?? timeline.audio?.sfx ?? true,
-            sfxVolume: sfxVolume ?? timeline.audio?.sfxVolume ?? 0.35,
-          },
-        };
-      }
-
-      const cacheBust = Date.now();
-
-      if (isAllAspects) {
-        const allRes = await renderTimelineAllAspects(timeline, {
+      if (selection === 'all') {
+        const results = await renderTimelineAllAspects(timeline, {
           outDir,
-          maxDurationSec,
-          voiceProviderName: providerUsed,
-          sfx: sfxEnabled,
-          sfxVolume,
+          maxDurationSec: typeof maxDurationSec === 'number' ? maxDurationSec : undefined,
+          voiceProviderName: 'mock',
+          sfx: typeof sfx === 'boolean' ? sfx : timeline.audio?.sfx ?? true,
+          sfxVolume: typeof sfxVolume === 'number' ? sfxVolume : timeline.audio?.sfxVolume ?? 0.35,
+          music: music ?? timeline.audio?.music,
         });
-        const first = allRes[0];
-        const ratioItems = allRes.map((r) => ({
-          aspect: r.aspect,
-          width: r.width,
-          height: r.height,
-          videoUrl: `/out/${path.basename(r.videoPath)}?t=${cacheBust}`,
-          thumbnailUrl: `/out/${path.basename(r.thumbnailPath)}?t=${cacheBust}`,
-        }));
+        const stamp = Date.now();
         res.json({
-          ok: true,
-          aspect: 'all',
-          videoUrl: `/out/${path.basename(first.videoPath)}?t=${cacheBust}`,
-          thumbnailUrl: `/out/${path.basename(first.thumbnailPath)}?t=${cacheBust}`,
-          allVideos: ratioItems,
-          allRatios: ratioItems,
-          durationSec: first.durationSec,
-          width: first.width,
-          height: first.height,
-          fps: first.fps,
-          meta: first.meta,
-          timeline: first.timelinePath ? timeline : timeline,
+          mode: 'all',
+          aspect: '9:16',
+          videoUrl: `/api/media/video.mp4?t=${stamp}`,
+          thumbnailUrl: `/api/media/thumbnail.png?t=${stamp}`,
+          allRatios: results.map((r) => ({
+            aspect: r.aspect,
+            width: r.width,
+            height: r.height,
+            videoUrl: `/api/media/${path.basename(r.videoPath)}?t=${stamp}`,
+            thumbnailUrl: `/api/media/${path.basename(r.thumbnailPath)}?t=${stamp}`,
+          })),
+          meta: results[0].meta,
+          durationSec: results[0].durationSec,
+          framesRendered: results[0].framesRendered,
+          width: results[0].width,
+          height: results[0].height,
+          fps: results[0].fps,
         });
         return;
       }
 
-      const targetAspect = requestedAspect ?? timeline.aspect ?? '9:16';
-      const videoFilename = isGallery ? 'gallery.mp4' : 'video.mp4';
-      const thumbnailFilename = isGallery ? 'gallery-thumbnail.png' : 'thumbnail.png';
-      const metaFilename = isGallery ? 'gallery-meta.json' : 'meta.json';
-      const timelineFilename = isGallery ? 'gallery-timeline.json' : 'timeline.json';
-
-      const result = await renderTimelineToVideo(timeline, {
+      const adapted = applyAspectToTimeline(timeline, singleAspect);
+      const result = await renderTimelineToVideo(adapted, {
         outDir,
-        aspect: targetAspect,
-        videoFilename,
-        thumbnailFilename,
-        metaFilename,
-        timelineFilename,
-        maxDurationSec,
-        voiceProviderName: providerUsed,
-        sfx: sfxEnabled,
-        sfxVolume,
+        aspect: singleAspect,
+        maxDurationSec: typeof maxDurationSec === 'number' ? maxDurationSec : undefined,
+        voiceProviderName: 'mock',
+        sfx: typeof sfx === 'boolean' ? sfx : adapted.audio?.sfx ?? true,
+        sfxVolume: typeof sfxVolume === 'number' ? sfxVolume : adapted.audio?.sfxVolume ?? 0.35,
+        music: music ?? adapted.audio?.music,
       });
 
-      // Also save inside out/<slug>/
-      const slugDir = path.join(outDir, slugify(timeline.topic));
-      fs.mkdirSync(slugDir, { recursive: true });
-      fs.copyFileSync(result.videoPath, path.join(slugDir, videoFilename));
-      fs.copyFileSync(result.thumbnailPath, path.join(slugDir, thumbnailFilename));
-      fs.copyFileSync(result.metaPath, path.join(slugDir, metaFilename));
-      fs.copyFileSync(result.timelinePath, path.join(slugDir, timelineFilename));
-
+      const stamp = Date.now();
       res.json({
-        ok: true,
+        mode: 'single',
         aspect: result.aspect,
-        videoUrl: `/out/${videoFilename}?t=${cacheBust}`,
-        thumbnailUrl: `/out/${thumbnailFilename}?t=${cacheBust}`,
-        metaUrl: `/out/${metaFilename}?t=${cacheBust}`,
-        timelineUrl: `/out/${timelineFilename}?t=${cacheBust}`,
+        videoUrl: `/api/media/video.mp4?t=${stamp}`,
+        thumbnailUrl: `/api/media/thumbnail.png?t=${stamp}`,
+        meta: result.meta,
         durationSec: result.durationSec,
+        framesRendered: result.framesRendered,
         width: result.width,
         height: result.height,
         fps: result.fps,
-        meta: result.meta,
-        timeline: applyAspectToTimeline(timeline, targetAspect),
       });
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : String(err),
+        error: err instanceof Error ? err.message : 'Failed to render video',
       });
     }
   });
 
   app.post('/api/batch', async (req, res) => {
     try {
-      const rawTopics: string[] = Array.isArray(req.body?.topics)
-        ? req.body.topics
-        : [
-            'What if Mom started playing on your Roblox account',
-            'What if every uncompleted homework assignment shrank your room by 10%',
-            'What if your little sibling got a remote control that paused you in real life',
-            'What if every minute past bedtime cost 100 of your in-game coins',
-          ];
+      const { scriptPaths, scriptsText, aspect: rawAspect } = req.body as {
+        scriptPaths?: string[];
+        scriptsText?: string[];
+        aspect?: string;
+      };
+      const parsedSel = rawAspect ? parseAspectSelection(rawAspect) : '9:16';
+      const aspect: AspectRatio = parsedSel === 'all' ? '9:16' : parsedSel;
 
-      const parsedAspect = AspectRatioSchema.safeParse(req.body?.aspect);
-      const aspect: AspectRatio = parsedAspect.success ? parsedAspect.data : '9:16';
+      const tts = new VoiceStudioProvider({ fallbackToMock: true });
+      const results = [];
 
-      const tts = createDefaultTtsProvider();
-      const items = [];
-
-      for (let i = 0; i < rawTopics.length; i++) {
-        const topic = rawTopics[i].trim();
-        if (!topic) continue;
-        const seed = computeTopicSeed(topic, i);
-        const variation = selectVariationForIndex(i);
-        const { script, source } = await generateScript(topic, { variation, aspect });
-        const { timeline, providerUsed } = await buildTimeline(script, tts, {
-          aspect,
-          seed,
-          variation,
-        });
-        items.push({
-          index: i + 1,
-          topic,
-          aspect,
-          seed,
-          variation,
-          source,
-          providerUsed,
-          durationSec: timeline.totalDurationSec,
-          totalFrames: timeline.totalFrames,
-          sceneCount: timeline.scenes.length,
-          timeline,
-        });
+      if (Array.isArray(scriptsText) && scriptsText.length > 0) {
+        for (let i = 0; i < Math.min(8, scriptsText.length); i++) {
+          const variation = selectVariationForIndex(i);
+          const script = parseScriptText(scriptsText[i], `batch_${i + 1}.script.txt`);
+          const { timeline, providerUsed } = await buildTimeline(script, tts, {
+            variation,
+            aspect,
+          });
+          results.push({
+            index: i,
+            topic: script.title,
+            variation,
+            source: 'manual',
+            providerUsed,
+            durationSec: timeline.totalDurationSec,
+            totalFrames: timeline.totalFrames,
+            sceneCount: timeline.scenes.length,
+            timeline,
+          });
+        }
+      } else {
+        const paths =
+          Array.isArray(scriptPaths) && scriptPaths.length > 0
+            ? scriptPaths
+            : ['examples/demo.script.txt'];
+        for (let i = 0; i < Math.min(8, paths.length); i++) {
+          const variation = selectVariationForIndex(i);
+          const script = loadScriptFromFile(paths[i]);
+          const { timeline, providerUsed } = await buildTimeline(script, tts, {
+            variation,
+            aspect,
+          });
+          results.push({
+            index: i,
+            topic: script.title,
+            variation,
+            source: paths[i],
+            providerUsed,
+            durationSec: timeline.totalDurationSec,
+            totalFrames: timeline.totalFrames,
+            sceneCount: timeline.scenes.length,
+            timeline,
+          });
+        }
       }
 
-      res.json({ items });
+      res.json({ items: results });
     } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : String(err),
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Batch script build failed',
       });
     }
   });
@@ -398,13 +468,13 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*all', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[BlobToon Studio Server] Running on http://localhost:${PORT}`);
+    console.log(`[BlobToon Server] Running on http://localhost:${PORT}`);
   });
 }
 

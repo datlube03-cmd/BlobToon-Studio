@@ -30,6 +30,7 @@ export interface RenderOptions {
   aspect?: AspectRatio;
   sfx?: boolean;
   sfxVolume?: number;
+  music?: string | { path: string; volume?: number };
   musicPath?: string;
   musicVolume?: number;
   videoFilename?: string;
@@ -51,6 +52,8 @@ export interface RenderOutputResult {
   timelinePath: string;
   audioDir?: string;
   durationSec: number;
+  framesRendered: number;
+  totalFrames: number;
   width: number;
   height: number;
   fps: number;
@@ -215,8 +218,10 @@ async function buildMasterTimelineAudioWav(
     }
 
     // 2. Mix optional background music (from --music path or skill renderParams.bgmGenre)
-    let musicSourcePath = timeline.audio?.music?.path;
-    const musicVol = timeline.audio?.music?.volume ?? 0.15;
+    const rawMusic = timeline.audio?.music;
+    let musicSourcePath = typeof rawMusic === 'string' ? rawMusic : rawMusic?.path;
+    const musicVol =
+      typeof rawMusic === 'object' && rawMusic?.volume !== undefined ? rawMusic.volume : 0.15;
     if (!musicSourcePath && timeline.renderParams?.bgmGenre) {
       musicSourcePath = synthesizeProceduralBgm(
         timeline.renderParams.bgmGenre,
@@ -344,24 +349,36 @@ export async function renderTimelineToVideo(
   const preset = getAspectPreset(targetAspect);
   const baseTimeline = applyAspectToTimeline(inputTimeline, targetAspect);
 
+  const existingMusic = baseTimeline.audio?.music;
+  const existingMusicPath =
+    typeof existingMusic === 'string' ? existingMusic : existingMusic?.path;
+  const existingMusicVol =
+    typeof existingMusic === 'object' && existingMusic?.volume !== undefined
+      ? existingMusic.volume
+      : 0.15;
+
+  const resolvedOptionMusicPath =
+    options.musicPath ??
+    (typeof options.music === 'string' ? options.music : options.music?.path);
+
   // Apply CLI/option overrides for SFX and background music (Change F4)
   const timeline: Timeline = {
     ...baseTimeline,
     audio: {
       sfx: options.sfx ?? baseTimeline.audio?.sfx ?? true,
       sfxVolume: options.sfxVolume ?? baseTimeline.audio?.sfxVolume ?? 0.35,
-      ...(options.musicPath
+      ...(resolvedOptionMusicPath
         ? {
             music: {
-              path: path.resolve(options.musicPath),
-              volume: options.musicVolume ?? baseTimeline.audio?.music?.volume ?? 0.15,
+              path: path.resolve(resolvedOptionMusicPath),
+              volume: options.musicVolume ?? existingMusicVol,
             },
           }
-        : baseTimeline.audio?.music
+        : existingMusicPath
         ? {
             music: {
-              path: baseTimeline.audio.music.path,
-              volume: options.musicVolume ?? baseTimeline.audio.music.volume ?? 0.15,
+              path: existingMusicPath,
+              volume: options.musicVolume ?? existingMusicVol,
             },
           }
         : {}),
@@ -504,6 +521,8 @@ export async function renderTimelineToVideo(
       timelinePath,
       audioDir,
       durationSec: actualDurationSec,
+      framesRendered: totalFrames,
+      totalFrames,
       width: timeline.width,
       height: timeline.height,
       fps: timeline.fps,

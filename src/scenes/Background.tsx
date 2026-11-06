@@ -14,6 +14,7 @@ export interface BackgroundProps {
   cameraShake?: CameraShakeLevel;
   zoomPunchActive?: boolean;
   colorPalette?: string[];
+  bgColors?: [string, string];
 }
 
 export const Background: React.FC<BackgroundProps> = ({
@@ -27,8 +28,16 @@ export const Background: React.FC<BackgroundProps> = ({
   cameraShake = 'none',
   zoomPunchActive = false,
   colorPalette,
+  bgColors,
 }) => {
-  const variation = resolveVariationWithColorPalette(rawVariation, colorPalette);
+  const paletteVariation = resolveVariationWithColorPalette(rawVariation, colorPalette);
+  const variation = bgColors
+    ? {
+        ...paletteVariation,
+        skyTop: bgColors[0],
+        skyBottom: bgColors[1],
+      }
+    : paletteVariation;
   const gradId = `bg-grad-${type}-${variation.id}-${width}x${height}`;
   const u = unit / 1080;
   const strokeW = Math.max(4, Math.round(10 * u));

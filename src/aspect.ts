@@ -101,6 +101,17 @@ export function getAspectPreset(aspect: AspectRatio = '9:16'): AspectPreset {
   return ASPECT_PRESETS[aspect] ?? ASPECT_PRESETS['9:16'];
 }
 
+export function parseAspectSelection(raw?: string): AspectSelection {
+  if (!raw) return '9:16';
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned === 'all') return 'all';
+  const parsed = AspectRatioSchema.safeParse(cleaned);
+  if (parsed.success) return parsed.data;
+  throw new Error(
+    `Invalid aspect ratio '${raw}'. Supported presets: ${ALL_ASPECT_RATIOS.join(', ')}, all`
+  );
+}
+
 export interface SafeAreaBox {
   left: number;
   right: number;

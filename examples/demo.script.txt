@@ -1,0 +1,21 @@
+title: What if Mom played on your Roblox account?
+aspect: 9:16
+voice: Narrator
+characters:
+  kid: blob(color=#4cc9f0, voice=Voice A)
+  mom: blob(color=#f72585, voice=Voice B)
+
+--- DAY 1 | bg=#ffd6a5,#fdffb6 | caption="DAY 1: Mom sets a 1 hour limit"
+kid [happy, bounce, x=0.3]: Yay, game time!
+mom [angry, slide-in, x=0.7]: Hand it over, my turn.
+prop phone [x=0.5, y=0.6]
+narrator: Day one looks easy.
+
+--- DAY 2 | bg=#caffbf,#9bf6ff
+mom [excited, jump, x=0.5]: I beat your high score!
+kid [shock, walk to x=0.4]: Wait... how?!
+
+--- DAY 3 | bg=#fbcfe8,#e9d5ff | caption="DAY 3: Mom is the new clan leader"
+mom [smug, bounce, x=0.68]: Your whole squad just voted me guild leader!
+kid [sad, shake, x=0.32, silent]: Not my main account!
+narrator: Would you finish every chore or start a brand new save file?

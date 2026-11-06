@@ -236,6 +236,7 @@ export function buildSfxDemoTimeline(aspect: AspectRatio = '9:16'): Timeline {
         {
           id: 'demo_blob',
           name: spec.name.toUpperCase(),
+          type: 'blob',
           color: variation.characterPalette[idx % variation.characterPalette.length],
           accessory: idx % 2 === 0 ? 'headphones' : 'crown',
           hoodieColor: variation.wallAccent,

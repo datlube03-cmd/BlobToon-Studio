@@ -84,6 +84,15 @@ export function selectVariationBySeed(seed: number): PaletteVariation {
   return PALETTE_VARIATIONS[Math.abs(seed) % PALETTE_VARIATIONS.length];
 }
 
+export function slugifyTopic(topic: string): string {
+  const cleaned = topic
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return cleaned || 'blobtoon-project';
+}
+
 export function applyVariationToScript(script: Script, variation: PaletteVariation): Script {
   const cloned: Script = JSON.parse(JSON.stringify(script));
   cloned.scenes = cloned.scenes.map((scene, sIdx) => {
