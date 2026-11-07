@@ -7,6 +7,7 @@ import { DEFAULT_TOPIC_IDEAS, SCRIPT_MODEL, SCRIPT_SYSTEM_RULES, buildScriptProm
 import { sanitizeAndValidateScript } from './src/studio/schema';
 
 dotenv.config();
+process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING = 'true';
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
