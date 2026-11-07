@@ -5,8 +5,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import React from 'react';
 import ReactDOMServer from 'react-dom/server';
-import { bundle } from '@remotion/bundler';
-import { renderMedia, renderStill, selectComposition } from '@remotion/renderer';
 import {
   ALL_ASPECT_RATIOS,
   AspectRatio,
@@ -33,12 +31,16 @@ let cachedRemotionBundlePromise: Promise<string> | null = null;
 export async function getRemotionBundleUrl(): Promise<string> {
   if (!cachedRemotionBundlePromise) {
     const entryPoint = path.resolve(process.cwd(), 'src/render/index.ts');
-    cachedRemotionBundlePromise = bundle({
-      entryPoint,
-    }).catch((err) => {
-      cachedRemotionBundlePromise = null;
-      throw err;
-    });
+    cachedRemotionBundlePromise = import('@remotion/bundler')
+      .then(({ bundle }) =>
+        bundle({
+          entryPoint,
+        })
+      )
+      .catch((err) => {
+        cachedRemotionBundlePromise = null;
+        throw err;
+      });
   }
   return cachedRemotionBundlePromise;
 }
@@ -436,6 +438,7 @@ export async function renderTimelineToVideo(
     if (!isDraftMode) {
       // PRIMARY FINAL RENDERER: Remotion (@remotion/bundler + @remotion/renderer renderStill & renderMedia)
       // Uses local Chromium/chrome-headless-shell and standard ffmpeg (no librsvg required).
+      const { renderMedia, renderStill, selectComposition } = await import('@remotion/renderer');
       const browserExecutable = resolveRemotionBrowserExecutable() ?? undefined;
       options.onProgress?.(5, `Bundling Remotion composition (${targetAspect})`);
       const serveUrl = await getRemotionBundleUrl();
